@@ -409,8 +409,7 @@ sub _build_skill_sources {
   my @list = ref $raw eq 'ARRAY' ? @$raw : ($raw);
   my @specs;
   for my $item (@list) {
-    my $s = _normalize_skill_spec($item);
-    push @specs, $s if $s;
+    push @specs, _normalize_skill_spec($item);
   }
   return \@specs;
 }

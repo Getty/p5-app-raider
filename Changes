@@ -2,6 +2,23 @@ Revision history for App-Raider
 
 {{$NEXT}}
 
+    - /model REPL command: show current engine and model, list available
+      models from the engine grouped by date-snapshot families (e.g.
+      gpt-4o [+3 snapshots]); /model list [FILTER] for the full or
+      substring-filtered list; /model NAME saves the chosen model to
+      .raider.yml under default.model.
+    - Model list colours: names in bright-blue, structural labels grey —
+      consistent with the rest of the banner.
+    - Fixed _build_skill_sources calling _normalize_skill_spec in scalar
+      context, silently dropping the CLAUDE.md spec from the claude
+      profile when loaded from .raider.yml ("seeing CLAUDE.md, ignoring"
+      even with profiles: claude active).
+    - Fixed Term::ReadLine::Gnu detection: require Term::ReadLine::Gnu
+      fails with "invalid to load directly"; now detected via
+      Term::ReadLine->new + ->ReadLine =~ /Gnu/.
+    - Readline history now persists across Ctrl-C / SIGTERM via signal
+      handlers that call WriteHistory before exit.
+
 0.001     2026-04-20 17:44:05Z
 
     - Initial release.

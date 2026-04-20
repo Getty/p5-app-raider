@@ -275,6 +275,63 @@ sub persist_profiles {
   return %saved_now;
 }
 
+sub collapse_model_list {
+  my ($list, $current) = @_;
+  my %all    = map { $_ => 1 } @$list;
+  my %groups;   # base => [snapshot variants]
+  my %is_snap;  # id => 1
+
+  for my $id (@$list) {
+    if (my ($base) = ($id =~ /^(.+?)-\d{4}-\d{2}-\d{2}(?:-.+)?$/)) {
+      push @{$groups{$base}}, $id;
+      $is_snap{$id} = 1;
+    }
+    elsif (my ($base2) = ($id =~ /^(.+)-\d{4}$/)) {
+      push @{$groups{$base2}}, $id;
+      $is_snap{$id} = 1;
+    }
+  }
+
+  my @rows;
+  for my $id (sort @$list) {
+    next if $is_snap{$id};
+    my @snaps = sort @{$groups{$id} // []};
+    push @rows, {
+      id      => $id,
+      snaps   => \@snaps,
+      current => ($id eq $current || !!(grep { $_ eq $current } @snaps)),
+    };
+  }
+
+  # orphaned snapshot families whose base isn't a standalone model
+  my %seen = map { $_->{id} => 1 } @rows;
+  for my $base (sort keys %groups) {
+    next if $seen{$base};
+    my @snaps = sort @{$groups{$base}};
+    push @rows, {
+      id      => $base,
+      snaps   => \@snaps,
+      orphan  => 1,
+      current => !!(grep { $_ eq $current } @snaps),
+    };
+  }
+
+  return sort { $a->{id} cmp $b->{id} } @rows;
+}
+
+sub persist_model {
+  my ($root, $model) = @_;
+  my $file = Path::Tiny::path($root)->child('.raider.yml');
+  my $yml = {};
+  if (-f $file) {
+    my $loaded = eval { YAML::PP->new->load_string($file->slurp_utf8) };
+    $yml = $loaded if ref $loaded eq 'HASH';
+  }
+  $yml->{default} = {} unless ref $yml->{default} eq 'HASH';
+  $yml->{default}{model} = $model;
+  $file->spew_utf8(YAML::PP->new->dump_string($yml));
+}
+
 sub print_agent { print c(agent => render_inline_code($_[0])), "\n" }
 sub print_meta  { print c(meta  => $_[0]), "\n" }
 sub print_err   { print c(err   => "error: "), c(warn => $_[0]), "\n" }
@@ -295,6 +352,8 @@ sub handle_slash {
     print_meta("  /prompt               launch the prompt-builder (edits .raider.md)");
     print_meta("  /skill [PATH]         export plain-markdown skill doc");
     print_meta("  /skill-claude [PATH]  export Claude Code SKILL.md with frontmatter");
+    print_meta("  /model [NAME]         set+save model to .raider.yml");
+    print_meta("  /model list [FILTER]  list available models (optionally filtered)");
     print_meta("  /quit /exit :q        leave the REPL");
     return;
   }
@@ -346,6 +405,48 @@ sub handle_slash {
     my $path = length $arg ? $arg : undef;
     my $p = App::Raider::Skill->new(app => $app)->write_claude_skill($path);
     print_meta("wrote $p");
+    return;
+  }
+  if ($cmd eq 'model') {
+    my ($subcmd, $filter) = split /\s+/, $arg, 2;
+
+    if (!length $arg || ($subcmd eq 'list')) {
+      my $current = $app->has_model ? $app->model : '';
+      print c(meta => "engine:  "), c(title => $app->engine_name), "\n";
+      print c(meta => "model:   "), c(title => length $current ? $current : '(engine default)'), "\n";
+      my $engine = eval { $app->_engine };
+      if ($engine && $engine->can('list_models')) {
+        my $list = eval { $engine->list_models };
+        if ($@) {
+          my $err = $@; chomp $err;
+          print_err("list_models failed: $err");
+        }
+        elsif (@$list) {
+          my @filtered = length($filter // '')
+            ? grep { index($_, $filter) >= 0 } @$list
+            : @$list;
+          my @rows    = collapse_model_list(\@filtered, $current);
+          my $total   = scalar @rows;
+          my $cap     = (defined $subcmd && $subcmd eq 'list') ? $total : 20;
+          my @show    = @rows[0 .. ($cap < $total ? $cap - 1 : $total - 1)];
+          print c(meta => "models" . (length($filter // '') ? " (/$filter/)" : "") . ":"), "\n";
+          for my $row (@show) {
+            my $star  = $row->{current} ? c(accent => '*') : ' ';
+            my $name  = c(title => $row->{id});
+            my $snaps = @{$row->{snaps}}
+              ? c(meta => '  [+' . scalar(@{$row->{snaps}}) . (scalar(@{$row->{snaps}}) == 1 ? ' snapshot]' : ' snapshots]'))
+              : '';
+            print "  $star $name$snaps\n";
+          }
+          if ($cap < $total) {
+            print c(meta => "    … $cap of $total shown — /model list [filter] for all"), "\n";
+          }
+        }
+      }
+      return;
+    }
+    persist_model($app->root, $arg);
+    print c(meta => "model saved: "), c(title => $arg), c(meta => " (takes effect on next start)"), "\n";
     return;
   }
   print_err("unknown command: /$cmd (try /help)");
@@ -480,13 +581,13 @@ sub run_one {
 if ($opt{interactive}) {
   # Prefer Term::ReadLine::Gnu (line editing + persistent history).
   # Fall back to IO::Prompt::Tiny when Gnu isn't installed.
-  my $have_gnu = eval { require Term::ReadLine::Gnu; 1 };
-  my ($term, $histfile, $read_line, $impl);
+  my ($histfile, $read_line, $impl);
+  my $term     = Term::ReadLine->new('raider');
+  my $have_gnu = ($term->ReadLine =~ /Gnu/);
 
   if ($have_gnu) {
-    $term = Term::ReadLine->new('raider');
     $term->ornaments(0);
-    $impl = $term->ReadLine;                            # Term::ReadLine::Gnu
+    $impl     = $term->ReadLine;
     $histfile = path($ENV{HOME} // '.')->child('.raider_history')->stringify;
     eval { $term->ReadHistory($histfile) } if -f $histfile;
     # Gray prompt, plain-color user input. Non-printing sequences are
@@ -495,10 +596,19 @@ if ($opt{interactive}) {
            . 'raider> '
            . "\x01" . color('reset') . "\x02";
     $read_line = sub { $term->readline($ps) };
+    # Save history on Ctrl-C / SIGTERM so entries survive interrupted sessions
+    my $save_and_exit = sub {
+      eval { $term->WriteHistory($histfile) };
+      print c(meta => "\nbye."), "\n";
+      exit 0;
+    };
+    $SIG{INT}  = $save_and_exit;
+    $SIG{TERM} = $save_and_exit;
   }
   else {
-    $impl = 'IO::Prompt::Tiny (install Term::ReadLine::Gnu for history)';
+    $impl      = 'IO::Prompt::Tiny (install Term::ReadLine::Gnu for history)';
     $read_line = sub { prompt('raider>') };
+    $SIG{INT}  = sub { print c(meta => "\nbye."), "\n"; exit 0 };
   }
 
   # Collect active profile names: CLI flags + any persisted in .raider.yml.
@@ -589,8 +699,10 @@ then runs the L<Langertha::Raider> multi-turn agent loop on your prompt.
 
 Interactive mode (C<-i>) opens a REPL with conversation history retained
 across turns. With L<Term::ReadLine::Gnu> installed, line editing and
-persistent input history (F<~/.raider_history>) are enabled automatically.
-Meta-commands: C<clear>, C<metrics>, C<quit>/C<exit>/C<:q>.
+persistent input history (F<~/.raider_history>) are enabled automatically —
+including across Ctrl-C interrupts. Slash commands available in the REPL:
+C</help>, C</clear>, C</metrics>, C</stats>, C</reload>, C</prompt>,
+C</skill>, C</skill-claude>, C</model>, C</quit>.
 
 With C<--json>, F<raider> emits a single JSON object
 (C<{response, metrics, elapsed}>) instead of the human-oriented output, which

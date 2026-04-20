@@ -1,5 +1,7 @@
 Revision history for App-Raider
 
+{{$NEXT}}
+
 0.002     2026-04-20 20:28:50Z
 
     - /model REPL command: show current engine and model, list available

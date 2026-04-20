@@ -1,5 +1,5 @@
 package App::Raider::Skill;
-our $VERSION = '0.002';
+our $VERSION = '0.003';
 # ABSTRACT: Generate a "how to use raider" documentation file from a live App::Raider configuration
 
 use Moose;

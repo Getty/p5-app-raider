@@ -1,5 +1,5 @@
 package App::Raider::FileTools;
-
+our $VERSION = '0.002';
 # ABSTRACT: MCP::Server factory with local filesystem tools (list/read/write/edit)
 
 use strict;

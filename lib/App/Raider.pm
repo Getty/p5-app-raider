@@ -1,7 +1,7 @@
 # ABSTRACT: Autonomous CLI agent that can browse directories, edit files, and run bash commands
 
 package App::Raider;
-
+our $VERSION = '0.002';
 use Moose;
 use IO::Async::Loop;
 use Future::AsyncAwait;

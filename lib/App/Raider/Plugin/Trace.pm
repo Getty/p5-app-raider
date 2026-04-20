@@ -1,5 +1,5 @@
 package App::Raider::Plugin::Trace;
-
+our $VERSION = '0.002';
 # ABSTRACT: Live ANSI-colored progress output for a running Langertha::Raider raid
 
 use Moose;

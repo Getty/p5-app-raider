@@ -1,5 +1,5 @@
 package App::Raider::Plugin::Situation;
-
+our $VERSION = '0.002';
 # ABSTRACT: Inject situational context (current time, timezone, host, user) at the start of the first raid
 
 use Moose;

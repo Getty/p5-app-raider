@@ -1,5 +1,5 @@
 package App::Raider::WebTools;
-our $VERSION = '0.003';
+our $VERSION = '0.004';
 # ABSTRACT: MCP::Server factory with web search and fetch tools (Net::Async::WebSearch + Net::Async::HTTP)
 
 use strict;

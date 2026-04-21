@@ -1,5 +1,7 @@
 Revision history for App-Raider
 
+{{$NEXT}}
+
 0.003     2026-04-21 01:46:09Z
 
     - Switch bash tool from the retired MCP::Server::Run::Bash to

@@ -1,12 +1,12 @@
 # ABSTRACT: Autonomous CLI agent that can browse directories, edit files, and run bash commands
 
 package App::Raider;
-our $VERSION = '0.003';
+our $VERSION = '0.004';
 use Moose;
 use IO::Async::Loop;
 use Future::AsyncAwait;
 use Net::Async::MCP;
-use MCP::Server::Run::Bash;
+use MCP::Run::Bash;
 use Module::Runtime ();
 use Path::Tiny;
 use YAML::PP ();
@@ -42,7 +42,7 @@ working coding/system agent:
 =item * Local filesystem access, confined to L</root>
 (L<App::Raider::FileTools>).
 
-=item * Full shell via L<MCP::Server::Run::Bash> (the C<bash> tool).
+=item * Full shell via L<MCP::Run::Bash> (the C<bash> tool).
 
 =item * Web search + fetch via L<Net::Async::WebSearch> and
 L<Net::Async::HTTP> (L<App::Raider::WebTools>).
@@ -535,7 +535,7 @@ sub _build_mcps {
 
   my $files = build_file_tools_server(root => $self->root);
 
-  my $bash = MCP::Server::Run::Bash->new(
+  my $bash = MCP::Run::Bash->new(
     tool_name         => 'bash',
     tool_description  => 'Run a shell command with bash -c. Returns exit code, stdout, and stderr. Use this for ls, grep, find, git, cat, running tests, any shell pipeline — anything you would type at a terminal.',
     working_directory => $self->root,
@@ -758,7 +758,7 @@ __PACKAGE__->meta->make_immutable;
 
 =item * L<App::Raider::FileTools>
 
-=item * L<MCP::Server::Run::Bash>
+=item * L<MCP::Run::Bash>
 
 =item * L<raider> — the CLI entry point
 

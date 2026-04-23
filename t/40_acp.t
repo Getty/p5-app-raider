@@ -40,7 +40,7 @@ my $listen = IO::Socket::IP->new(
   LocalPort => 0,
   Listen    => 1,
   ReuseAddr => 1,
-) or die "cannot bind: $!";
+) or plan skip_all => "cannot bind local TCP socket: $!";
 
 my $port = $listen->sockport;
 ok($port > 0, "listener bound to port $port");

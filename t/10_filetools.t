@@ -55,4 +55,23 @@ subtest root_escape => sub {
   ok($res->{isError}, 'path escape rejected');
 };
 
+subtest symlink_escape => sub {
+  my $outside = path(tempdir(CLEANUP => 1))->child('secret.txt');
+  $outside->spew_utf8("outside\n");
+
+  my $link = path($dir)->child('outside-link');
+  symlink $outside, $link or skip "symlink unavailable: $!", 2;
+
+  my $read = call_tool('read_file', { path => 'outside-link' });
+  ok($read->{isError}, 'read through symlink escaping root rejected');
+
+  my $parent = path($dir)->child('outside-dir-link');
+  symlink $outside->parent, $parent or skip "symlink dir unavailable: $!", 1;
+  my $write = call_tool('write_file', {
+    path => 'outside-dir-link/new.txt',
+    content => "nope\n",
+  });
+  ok($write->{isError}, 'write through symlink parent escaping root rejected');
+};
+
 done_testing;

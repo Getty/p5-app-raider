@@ -8,8 +8,12 @@ use Path::Tiny;
 use Getopt::Long qw( GetOptions );
 use JSON::MaybeXS ();
 use IO::Async::Loop;
+use IO::Async::Stream;
+use IO::Socket::UNIX;
 use POSIX qw(WNOHANG);
 use Socket qw(SOCK_STREAM);
+use YAML::PP;
+use App::Raider::Hall;
 
 sub main {
   my ($class, @args) = @_;
@@ -102,7 +106,6 @@ sub run_init {
     isolated => 0,
   };
 
-  require YAML::PP;
   my $cfg_file = path($dir)->child('.raider-hall.yml');
   if (-f $cfg_file) {
     die "Refusing to overwrite existing $cfg_file\n";
@@ -127,7 +130,6 @@ sub run_add_raider {
     unless $name;
 
   my $dir = cwd;
-  require YAML::PP;
   my $cfg_file = path($dir)->child('.raider-hall.yml');
   die "No .raider-hall.yml found (run: raider hall init)\n" unless -f $cfg_file;
 
@@ -201,7 +203,6 @@ sub run_start {
     }
   }
 
-  require App::Raider::Hall;
   my $hall = App::Raider::Hall->new(root => $dir);
 
   if ($opt{daemon}) {
@@ -289,9 +290,6 @@ sub run_ps {
 
 sub _send_command {
   my ($socket_path, $msg) = @_;
-
-  require IO::Socket::UNIX;
-  require IO::Async::Stream;
 
   my $sock = IO::Socket::UNIX->new(
     Type => SOCK_STREAM,

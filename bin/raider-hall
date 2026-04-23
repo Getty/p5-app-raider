@@ -4,8 +4,8 @@
 
 use strict;
 use warnings;
+use App::Raider::Hall::CLI;
 
-require App::Raider::Hall::CLI;
 App::Raider::Hall::CLI->main(@ARGV);
 
 1;

@@ -7,6 +7,7 @@ use warnings;
 use Getopt::Long qw( GetOptions );
 use JSON::MaybeXS ();
 use Term::ANSIColor qw( colored );
+use Term::ReadLine;
 use App::Raider::ACP::Client;
 
 =head1 SYNOPSIS
@@ -133,7 +134,6 @@ sub run_connect {
   my $sid = $sess->{sessionId};
 
   # Read loop: use Term::ReadLine if available, else bare STDIN.
-  require Term::ReadLine;
   my $term = Term::ReadLine->new('raider-acp');
   eval { $term->ornaments(0) };
   my $prompt = _color_on('bright_black', "acp> ");

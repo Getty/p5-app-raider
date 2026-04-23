@@ -3,6 +3,7 @@
 package App::Raider;
 our $VERSION = '0.004';
 use Moose;
+use namespace::autoclean;
 use IO::Async::Loop;
 use Future::AsyncAwait;
 use Net::Async::MCP;
@@ -10,6 +11,7 @@ use MCP::Run::Bash;
 use Module::Runtime ();
 use Path::Tiny;
 use YAML::PP ();
+use App::Raider::HallTools qw( build_hall_tools_server );
 
 use App::Raider::FileTools qw( build_file_tools_server );
 use App::Raider::WebTools  qw( build_web_tools_server );
@@ -351,6 +353,12 @@ listed ones exclusively.
 
 =cut
 
+has pack_names => (
+  is        => 'ro',
+  isa       => 'ArrayRef[Str]',
+  predicate => 'has_pack_names',
+);
+
 has packs => (
   is      => 'ro',
   isa     => 'App::Raider::Packs::Collection',
@@ -361,7 +369,7 @@ has packs => (
 sub _build_packs {
   my ($self) = @_;
   my $yml = $self->_load_yml_options;
-  my $yml_packs = $yml->{packs};
+  my $yml_packs = $self->has_pack_names ? $self->pack_names : $yml->{packs};
 
   my $collection = build_packs(root => $self->root);
 
@@ -549,6 +557,17 @@ sub _load_yml_options {
   return \%opts;
 }
 
+my %APP_YML_KEYS = map { $_ => 1 } qw(
+  skills packs perl preferred_lib_target
+);
+
+sub _engine_yml_options {
+  my ($self) = @_;
+  my %opts = %{$self->_load_yml_options};
+  delete @opts{keys %APP_YML_KEYS};
+  return \%opts;
+}
+
 has loop => (
   is      => 'ro',
   isa     => 'IO::Async::Loop',
@@ -627,8 +646,7 @@ sub _build_mcps {
   # Hall-side tools: when we were spawned by raider-hall, expose
   # telegram_reply / hall_status / hall_spawn so the agent can talk back.
   if ($ENV{RAIDER_HALL_SOCKET} && -S $ENV{RAIDER_HALL_SOCKET}) {
-    require App::Raider::HallTools;
-    my $hall_srv = App::Raider::HallTools::build_hall_tools_server(
+    my $hall_srv = build_hall_tools_server(
       socket => $ENV{RAIDER_HALL_SOCKET},
     );
     my $client = Net::Async::MCP->new(server => $hall_srv);
@@ -651,7 +669,7 @@ sub _build_engine {
   $args{model}   = $self->model   if $self->has_model;
 
   # Engine-level overrides: .raider.yml then engine_options (CLI wins).
-  my $yml = $self->_load_yml_options;
+  my $yml = $self->_engine_yml_options;
   %args = (%args, %$yml, %{$self->engine_options});
 
   return $class->new(%args);

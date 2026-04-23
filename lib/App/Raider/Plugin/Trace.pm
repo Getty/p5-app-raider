@@ -3,6 +3,7 @@ our $VERSION = '0.004';
 # ABSTRACT: Live ANSI-colored progress output for a running Langertha::Raider raid
 
 use Moose;
+use namespace::autoclean;
 use Future::AsyncAwait;
 use Term::ANSIColor qw( colored );
 use JSON::MaybeXS ();

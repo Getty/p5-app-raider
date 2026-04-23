@@ -10,6 +10,12 @@ use File::Temp qw( tempdir );
 
 use App::Raider;  # for pack discovery path
 
+BEGIN {
+  my $repo = Path::Tiny::path(__FILE__)->parent->parent->absolute;
+  my $bin = $repo->child('bin', 'raider');
+  $ENV{RAIDER_HALL_RAIDER_BIN} = $bin->stringify if -x $bin;
+}
+
 subtest 'Hall new + config' => sub {
   my $tmp = tempdir(CLEANUP => 1);
   my $hall = App::Raider::Hall->new(root => path($tmp));
@@ -100,6 +106,50 @@ subtest 'longhouse_lib_path' => sub {
 
   my $lp = $hall->longhouse_lib_path;
   like($lp->stringify, qr/longhouse\/lib$/, 'longhouse lib path');
+};
+
+subtest 'same-file lazy components build without require side files' => sub {
+  my $tmp = tempdir(CLEANUP => 1);
+  my $hall = App::Raider::Hall->new(root => path($tmp));
+
+  isa_ok($hall->cron_scheduler, 'App::Raider::Hall::Cron');
+  isa_ok($hall->telegram, 'App::Raider::Hall::Telegram');
+  isa_ok($hall->mcp_adapter, 'App::Raider::Hall::MCP');
+};
+
+subtest 'queued singleton mission is replayed as text' => sub {
+  my $tmp = tempdir(CLEANUP => 1);
+  my $hall = App::Raider::Hall->new(root => path($tmp));
+
+  $hall->raiders->{'1bjorn'} = App::Raider::Hall::Raider->new({
+    id => 'old',
+    pid => 12345,
+    slot_name => '1bjorn',
+    base_name => 'bjorn',
+    log_path => path($tmp)->child('old.log'),
+    mission => 'old mission',
+  });
+
+  my $queued = $hall->spawn(name => '1bjorn', mission => 'next mission', attach => 1);
+  ok($queued->{queued}, 'second singleton spawn queued');
+
+  my @spawned;
+  no warnings 'redefine';
+  local *App::Raider::Hall::_spawn_raider = sub {
+    my ($self, $slot, $base, $mission, $attach) = @_;
+    push @spawned, [$slot, $base, $mission, $attach];
+    return { id => 'new', pid => 999, slot => $slot };
+  };
+
+  $hall->_reap_raider(12345, 0);
+  is_deeply($spawned[0], ['1bjorn', 'bjorn', 'next mission', 1],
+    'queued entry unpacked before spawning next raider');
+};
+
+subtest 'raider cli accepts pack option used by hall' => sub {
+  my $repo = path(__FILE__)->parent->parent->absolute;
+  my $script = $repo->child('bin', 'raider')->slurp_utf8;
+  like($script, qr/'pack=s\@'/, 'bin/raider declares --pack option');
 };
 
 subtest 'spawn result structure' => sub {

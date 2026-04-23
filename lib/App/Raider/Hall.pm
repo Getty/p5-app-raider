@@ -73,6 +73,13 @@ use POSIX qw(WNOHANG);
 use YAML::PP;
 use Moose;
 use namespace::autoclean;
+use IO::Async::Listener;
+use IO::Async::Process;
+use IO::Async::Timer::Countdown;
+use IO::Socket::UNIX;
+use File::Which ();
+use Net::Async::HTTP;
+use App::Raider::Hall::ACP;
 
 has root => (
   is => 'ro',
@@ -172,7 +179,6 @@ has cron_scheduler => (
 
 sub _build_cron_scheduler {
   my ($self) = @_;
-  require App::Raider::Hall::Cron;
   App::Raider::Hall::Cron->new(hall => $self);
 }
 
@@ -184,7 +190,6 @@ has telegram => (
 
 sub _build_telegram {
   my ($self) = @_;
-  require App::Raider::Hall::Telegram;
   App::Raider::Hall::Telegram->new(hall => $self);
 }
 
@@ -196,7 +201,6 @@ has mcp_adapter => (
 
 sub _build_mcp_adapter {
   my ($self) = @_;
-  require App::Raider::Hall::MCP;
   App::Raider::Hall::MCP->new(hall => $self);
 }
 
@@ -208,7 +212,6 @@ has acp_adapter => (
 
 sub _build_acp_adapter {
   my ($self) = @_;
-  require App::Raider::Hall::ACP;
   my $conf = $self->config->{acp} // {};
   App::Raider::Hall::ACP->new(
     hall => $self,
@@ -264,9 +267,6 @@ sub _setup_socket {
   my ($self) = @_;
   my $loop = $self->loop;
   my $path = $self->socket_path;
-
-  require IO::Async::Listener;
-  require IO::Socket::UNIX;
 
   my $sock = IO::Socket::UNIX->new(
     Local => $path,
@@ -494,7 +494,12 @@ sub _find_raider_by_pid {
 
 sub _spawn_next_in_queue {
   my ($self, $slot, $base_name, $mission) = @_;
-  $self->_spawn_raider($slot, $base_name, $mission);
+  my $attach;
+  if (ref $mission eq 'HASH') {
+    $attach = $mission->{attach};
+    $mission = $mission->{mission};
+  }
+  $self->_spawn_raider($slot, $base_name, $mission, $attach);
 }
 
 sub spawn {
@@ -555,7 +560,6 @@ sub _spawn_raider {
   my $log_dir = $self->root->child('.raider-hall', 'logs');
   $log_dir->mkpath unless -d $log_dir;
 
-  require IO::Async::Process;
   my $log_path = $log_dir->child("${slot}.log");
 
   my $lib_path = $self->_raider_lib_path($base_name);
@@ -619,7 +623,6 @@ sub _raider_bin {
   my $here = path($0)->absolute;
   my $sibling = $here->parent->child('raider');
   return $sibling->stringify if -x $sibling;
-  require File::Which;
   my $which = File::Which::which('raider');
   return $which if $which;
   die "Cannot find 'raider' binary (set RAIDER_HALL_RAIDER_BIN or put it in \$PATH)";
@@ -705,7 +708,6 @@ sub shutdown {
     kill 'TERM', $r->pid if $r->pid && $r->pid > 0;
   }
 
-  require IO::Async::Timer::Countdown;
   my $timer = IO::Async::Timer::Countdown->new(
     delay => 5,
     on_expire => sub {
@@ -888,6 +890,7 @@ use JSON::MaybeXS;
 use URI;
 use HTTP::Request::Common ();
 use IO::Async::Timer::Countdown;
+use Scalar::Util qw( weaken );
 
 has hall => (
   is => 'ro',
@@ -929,7 +932,6 @@ sub _start_bot {
   my $allowlist = $bot_conf->{allowlist} // [];
   my $routing = $bot_conf->{routing} // {};
 
-  require Net::Async::HTTP;
   my $ua = Net::Async::HTTP->new(
     max_connections_per_host => 1,
     timeout => 60,
@@ -962,7 +964,11 @@ sub _poll {
   $uri->query_form(%q);
 
   my $f = $ua->GET($uri);
+  $worker->{poll_future} = $f;
+  weaken(my $weak = $self);
   $f->on_done(sub {
+    my $self = $weak or return;
+    delete $worker->{poll_future};
     my ($resp) = @_;
     my $updates = eval {
       JSON::MaybeXS->new->decode($resp->decoded_content)->{result} // []
@@ -974,6 +980,8 @@ sub _poll {
     $self->hall->loop->later(sub { $self->_poll($name) });
   });
   $f->on_fail(sub {
+    my $self = $weak or return;
+    delete $worker->{poll_future};
     $self->hall->_emit('telegram.poll_error', { bot => $name, error => "$_[0]" });
     # Back off a bit on failure so we don't hot-loop against a dead network.
     my $timer = IO::Async::Timer::Countdown->new(
@@ -1049,7 +1057,15 @@ sub send_message {
 
   # Fire-and-forget: return the Future so callers can await if they want.
   my $f = $ua->do_request(request => $req);
+  my $id = time . '-' . int(rand(1_000_000));
+  $worker->{send_futures}{$id} = $f;
+  weaken(my $weak = $self);
+  $f->on_done(sub {
+    delete $worker->{send_futures}{$id};
+  });
   $f->on_fail(sub {
+    my $self = $weak or return;
+    delete $worker->{send_futures}{$id};
     $self->hall->_emit('telegram.send_error', {
       bot => $bot_name, chat_id => $chat_id, error => "$_[0]",
     });
@@ -1174,11 +1190,13 @@ sub handle_tool_call {
     return { cancelled => 1, id => $input->{id} };
   }
   if ($tool eq 'send_telegram') {
-    return $hall->telegram->send_message(
+    my $result = $hall->telegram->send_message(
       bot => $input->{bot},
       chat_id => $input->{chat_id},
       text => $input->{text},
     ) if $hall->can('telegram');
+    delete $result->{future} if $result;
+    return $result if $result;
     return { error => 'telegram not configured' };
   }
   if ($tool eq 'hall_status') {

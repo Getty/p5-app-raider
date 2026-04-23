@@ -12,7 +12,7 @@ requires 'JSON::MaybeXS';
 requires 'YAML::PP';
 requires 'Term::ANSIColor';
 
-requires 'Langertha', '0.402';
+requires 'Langertha', '0.404';
 requires 'Net::Async::MCP';
 requires 'MCP::Server';
 requires 'MCP::Run::Bash';

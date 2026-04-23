@@ -18,7 +18,7 @@ plan skip_all => 'OPENAI_API_KEY not set (live test disabled)'
 # Pick a free port.
 my $probe = IO::Socket::IP->new(
   LocalHost => '127.0.0.1', LocalPort => 0, Listen => 1, ReuseAddr => 1,
-) or die "cannot probe: $!";
+) or plan skip_all => "cannot bind local TCP socket: $!";
 my $port = $probe->sockport;
 close $probe;
 

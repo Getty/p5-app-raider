@@ -58,28 +58,29 @@ sub build_web_tools_server {
   my $loop            = $args{loop} or die "loop is required\n";
   my $max_fetch_bytes = $args{max_fetch_bytes} // 2_000_000;
 
-  my $http = Net::Async::HTTP->new(
-    user_agent  => 'raider/0.001',
+  my $http = $args{http} // Net::Async::HTTP->new(
+    user_agent    => 'raider/0.004',
     max_in_flight => 4,
   );
   $loop->add($http);
 
-  my $ws = Net::Async::WebSearch->new(http => $http);
+  my $ws = $args{web_search} // Net::Async::WebSearch->new(http => $http);
   $loop->add($ws);
 
-  $ws->add_provider(Net::Async::WebSearch::Provider::DuckDuckGo->new);
+  $ws->add_provider(Net::Async::WebSearch::Provider::DuckDuckGo->new)
+    unless $args{web_search};
 
-  if ($ENV{BRAVE_API_KEY}) {
+  if (!$args{web_search} && $ENV{BRAVE_API_KEY}) {
     $ws->add_provider(Net::Async::WebSearch::Provider::Brave->new(
       api_key => $ENV{BRAVE_API_KEY},
     ));
   }
-  if ($ENV{SERPER_API_KEY}) {
+  if (!$args{web_search} && $ENV{SERPER_API_KEY}) {
     $ws->add_provider(Net::Async::WebSearch::Provider::Serper->new(
       api_key => $ENV{SERPER_API_KEY},
     ));
   }
-  if ($ENV{GOOGLE_API_KEY} && $ENV{GOOGLE_CSE_ID}) {
+  if (!$args{web_search} && $ENV{GOOGLE_API_KEY} && $ENV{GOOGLE_CSE_ID}) {
     $ws->add_provider(Net::Async::WebSearch::Provider::Google->new(
       api_key => $ENV{GOOGLE_API_KEY},
       cx      => $ENV{GOOGLE_CSE_ID},
@@ -104,7 +105,10 @@ sub build_web_tools_server {
       my $query = $in->{query};
       my $limit = $in->{limit} // 8;
       my $f = $ws->search(query => $query, limit => $limit);
-      my $out = eval { $f->get };
+      my $out = eval {
+        $loop->await($f);
+        $f->get;
+      };
       return $tool->text_result("Error: $@", 1) if $@;
       my @lines;
       my $i = 0;
@@ -144,7 +148,10 @@ sub build_web_tools_server {
       my $req = GET($url);
       $req->header('User-Agent' => 'raider/0.001');
       my $f = $http->do_request(request => $req);
-      my $resp = eval { $f->get };
+      my $resp = eval {
+        $loop->await($f);
+        $f->get;
+      };
       return $tool->text_result("Error: $@", 1) if $@;
       unless ($resp->is_success) {
         return $tool->text_result(

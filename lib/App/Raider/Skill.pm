@@ -3,6 +3,7 @@ our $VERSION = '0.004';
 # ABSTRACT: Generate a "how to use raider" documentation file from a live App::Raider configuration
 
 use Moose;
+use namespace::autoclean;
 use Path::Tiny;
 
 =head1 SYNOPSIS
@@ -105,10 +106,10 @@ and keeps a persistent conversation with an LLM. This is how to drive it.
 
 ## Current live configuration
 
-- Engine: **$app->{engine_name}** (env: `$env`)
+- Engine: **@{[ $app->engine_name ]}** (env: `$env`)
 - Model: **$model**
 - Persona: $persona
-- Working root: `$app->{root}`
+- Working root: `@{[ $app->root ]}`
 - `.raider.yml` loaded: $yml_loaded
 - Web-search providers active: $web
 

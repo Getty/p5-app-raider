@@ -12,6 +12,19 @@ use App::Raider::PerlTools qw( build_perl_tools_server );
 
 my $dir = tempdir(CLEANUP => 1);
 
+my $fakebin = path($dir)->child('fakebin');
+$fakebin->mkpath;
+my $fake_cpanm = $fakebin->child('cpanm');
+$fake_cpanm->spew_utf8(<<'SH');
+#!/bin/sh
+case "$*" in
+  *Definitely::Not::A::Real::Raider::Module::XYZ*) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+chmod 0755, $fake_cpanm;
+$ENV{PATH} = $fakebin . ':' . $ENV{PATH};
+
 my $server = build_perl_tools_server(root => $dir);
 
 sub call_tool {
@@ -108,6 +121,21 @@ subtest perl_cpanm_idempotent => sub {
   my $cpanfile = path($target, 'cpanfile')->slurp_utf8;
   my $count = () = $cpanfile =~ /\bAcme::Double\b/g;
   is($count, 1, 'cpanfile entry is idempotent (no duplicates)');
+};
+
+subtest perl_cpanm_failed_install_not_recorded => sub {
+  my $target = path($dir)->child('.raider', 'lib3')->stringify;
+  my $module = 'Definitely::Not::A::Real::Raider::Module::XYZ';
+
+  my $res = call_tool('perl_cpanm', {
+    module  => $module,
+    options => { target => $target, from => path($dir)->child('empty-cpan')->stringify },
+  });
+  my $d = decoded($res);
+  ok(!$d->{installed}, 'install reported failure');
+
+  my $cpanfile = path($target, 'cpanfile')->slurp_utf8;
+  unlike($cpanfile, qr/\Q$module\E/, 'failed install not appended to cpanfile');
 };
 
 done_testing;

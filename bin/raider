@@ -13,6 +13,8 @@ use Term::ReadLine;                   # Core; upgrades to Gnu if installed
 use IO::Prompt::Tiny qw( prompt );    # Fallback when Gnu is not available
 use Path::Tiny;
 use App::Raider;
+use App::Raider::ACP::CLI;
+use App::Raider::Hall::CLI;
 use App::Raider::Skill;
 use Langertha::Raider;
 
@@ -22,7 +24,6 @@ binmode STDIN,  ':encoding(UTF-8)';
 # --- Hall dispatch (raider hall ...) ---------------------------------
 if (@ARGV && $ARGV[0] eq 'hall') {
   shift @ARGV;
-  require App::Raider::Hall::CLI;
   App::Raider::Hall::CLI->main(@ARGV);
   exit;
 }
@@ -30,7 +31,6 @@ if (@ARGV && $ARGV[0] eq 'hall') {
 # --- ACP client dispatch (raider acp ...) ----------------------------
 if (@ARGV && $ARGV[0] eq 'acp') {
   shift @ARGV;
-  require App::Raider::ACP::CLI;
   App::Raider::ACP::CLI->main(@ARGV);
   exit;
 }
@@ -68,6 +68,7 @@ GetOptions(
   'no-color'         => \$opt{no_color},
   'trace!'           => \$opt{trace},
   'perl'             => \$opt{perl},
+  'pack=s@'          => \@{ $opt{packs} //= [] },
   'customize-prompt' => \$opt{customize_prompt},
   'claude'               => \$opt{profile_claude},
   'openai|codex'         => \$opt{profile_openai},
@@ -116,6 +117,7 @@ Options:
       --no-color           Disable ANSI colors
       --no-trace           Hide live tool-call progress output
       --perl               Enable perl_eval / perl_check / perl_cpanm tools
+      --pack NAME          Enable a bundled pack (repeatable)
       --customize-prompt   Launch the prompt-builder at startup
       --claude             Load Claude Code layout: CLAUDE.md +
                            .claude/skills/*/SKILL.md.
@@ -144,6 +146,7 @@ $args{mission}        = $opt{mission}        if defined $opt{mission};
 $args{api_key}        = $opt{api_key}        if defined $opt{api_key};
 $args{trace}          = $opt{trace}          if defined $opt{trace};
 $args{perl}           = $opt{perl}           if defined $opt{perl};
+$args{pack_names}     = $opt{packs}          if @{ $opt{packs} // [] };
 $args{max_iterations} = $opt{max_iterations} if defined $opt{max_iterations};
 $args{engine_options} = \%engine_opts        if %engine_opts;
 

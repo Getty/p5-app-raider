@@ -34,6 +34,12 @@ sub build_perl_tools_server {
     return path($root)->child('.raider', 'lib')->stringify;
   };
 
+  my $perl5lib_for = sub {
+    my ($target) = @_;
+    my $base = path($target)->child('lib', 'perl5')->stringify;
+    return join ':', grep { defined && length } ($base, $ENV{PERL5LIB});
+  };
+
   my $ensure_lib_init = sub {
     my ($target) = @_;
     my $dir = path($target);
@@ -80,6 +86,8 @@ sub build_perl_tools_server {
 
       my $do_run = sub {
         my @cmd = ('perl', '-e', $code);
+        my $target = $resolve_lib_target->();
+        local $ENV{PERL5LIB} = $perl5lib_for->($target);
         my $h = start \@cmd, \$stdin, \$out, \$err, timeout($to_sec);
         $h->finish;
         my $fr = $h->full_result;
@@ -110,12 +118,18 @@ sub build_perl_tools_server {
 
       if (@missing && !$auto_installed && !$timed_out) {
         my ($i_out, $i_err);
-        my $ih = start ['cpanm', @missing], \$!, \$i_out, \$i_err, timeout(300);
+        my $target = $resolve_lib_target->();
+        $ensure_lib_init->($target);
+        my $empty = '';
+        my $ih = start ['cpanm', '--local-lib', $target, @missing],
+          \$empty, \$i_out, \$i_err, timeout(300);
         $ih->finish;
-        my $i_rc = $? >> 8;
+        my $fr = $ih->full_result;
+        my $i_rc = defined($fr) ? ($fr >> 8) : -1;
 
         if ($i_rc == 0) {
           $auto_installed = \@missing;
+          $append_to_cpanfile->($target, $_) for @missing;
           $rc = $do_run->();
         }
         else {
@@ -219,12 +233,13 @@ sub build_perl_tools_server {
       push @cmd, $module;
 
       my ($out, $err);
-      my $h = start \@cmd, \$!, \$out, \$err, timeout(300);
+      my $empty = '';
+      my $h = start \@cmd, \$empty, \$out, \$err, timeout(300);
       $h->finish;
       my $fr = $h->full_result;
       my $rc = defined($fr) ? ($fr >> 8) : -1;
 
-      $append_to_cpanfile->($target_dir, $module);
+      $append_to_cpanfile->($target_dir, $module) if $rc == 0;
 
       my $installed = ($rc == 0) ? JSON::MaybeXS::true() : JSON::MaybeXS::false();
 

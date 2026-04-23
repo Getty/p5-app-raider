@@ -7,6 +7,7 @@ use warnings;
 use Path::Tiny;
 use YAML::PP ();
 use JSON::MaybeXS ();
+use File::ShareDir ();
 
 # Pack class is defined below in this file
 
@@ -65,7 +66,6 @@ sub build_packs {
   #   4. $RAIDER_PACK_DIRS env for explicit overrides.
   {
     my $sd = eval {
-      require File::ShareDir;
       File::ShareDir::dist_dir('App-Raider');
     };
     if ($sd) {

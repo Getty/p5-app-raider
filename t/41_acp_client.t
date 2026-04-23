@@ -14,7 +14,7 @@ use YAML::PP;
 # Pick a free port by binding + closing.
 my $probe = IO::Socket::IP->new(
   LocalHost => '127.0.0.1', LocalPort => 0, Listen => 1, ReuseAddr => 1,
-) or die "cannot probe: $!";
+) or plan skip_all => "cannot bind local TCP socket: $!";
 my $port = $probe->sockport;
 close $probe;
 

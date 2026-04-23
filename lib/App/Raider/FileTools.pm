@@ -4,6 +4,7 @@ our $VERSION = '0.004';
 
 use strict;
 use warnings;
+use Cwd qw( realpath );
 use Path::Tiny;
 use MCP::Server;
 
@@ -25,6 +26,27 @@ arguments are confined to that directory.
 sub build_file_tools_server {
   my %args = @_;
   my $root = defined $args{root} ? path($args{root})->absolute : undef;
+  my $root_realpath = $root ? realpath($root) : undef;
+  die "Root does not exist: $root\n" if $root && !defined $root_realpath;
+  my $real_root = $root ? path($root_realpath)->absolute : undef;
+
+  my $assert_in_root = sub {
+    my ($p) = @_;
+    return unless $real_root;
+    die "Path escapes root: $p\n" unless $real_root->subsumes($p);
+    return;
+  };
+
+  my $nearest_existing = sub {
+    my ($p) = @_;
+    my $cur = $p;
+    while (!-e $cur) {
+      my $parent = $cur->parent;
+      die "No existing parent for $p\n" if "$parent" eq "$cur";
+      $cur = $parent;
+    }
+    return $cur;
+  };
 
   my $resolve = sub {
     my ($path) = @_;
@@ -32,8 +54,32 @@ sub build_file_tools_server {
     if ($root) {
       $p = $p->is_absolute ? $p : $root->child($path);
       $p = $p->absolute;
-      die "Path escapes root: $p\n" unless $root->subsumes($p);
+      my $existing = $nearest_existing->($p);
+      my $existing_realpath = realpath($existing)
+        or die "Cannot resolve path: $existing\n";
+      my $real_existing = path($existing_realpath)->absolute;
+      $assert_in_root->($real_existing);
+      if (-e $p) {
+        my $p_realpath = realpath($p)
+          or die "Cannot resolve path: $p\n";
+        my $real_p = path($p_realpath)->absolute;
+        $assert_in_root->($real_p);
+        $p = $real_p;
+      }
     }
+    return $p;
+  };
+
+  my $resolve_for_write = sub {
+    my ($path) = @_;
+    my $p = $resolve->($path);
+    return $p if -e $p;
+    my $parent = $p->parent;
+    my $existing = $nearest_existing->($parent);
+    my $existing_realpath = realpath($existing)
+      or die "Cannot resolve path: $existing\n";
+    my $real_existing = path($existing_realpath)->absolute;
+    $assert_in_root->($real_existing);
     return $p;
   };
 
@@ -89,7 +135,7 @@ sub build_file_tools_server {
     },
     code => sub {
       my ($tool, $in) = @_;
-      my $p = eval { $resolve->($in->{path}) };
+      my $p = eval { $resolve_for_write->($in->{path}) };
       return $tool->text_result("Error: $@", 1) if $@;
       eval {
         $p->parent->mkpath unless -d $p->parent;

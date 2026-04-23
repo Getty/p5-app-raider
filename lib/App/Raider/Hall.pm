@@ -417,31 +417,26 @@ sub _spawn_raider {
   push @cmd, '--';
   push @cmd, $mission;
 
-  my %env = %ENV;
-  $env{RAIDER_HALL_MODE} = '1';
-  $env{RAIDER_HALL_ROOT} = $self->root->stringify;
-  $env{RAIDER_HALL_SLOT} = $slot;
-  $env{PERL5LIB} = join ':', grep { defined } (
-    $env{PERL5LIB},
-    $self->_raider_lib_path($base_name),
-    ($self->config->{longhouse} ? $self->longhouse_lib_path->stringify : ()),
-  );
-
   my $log_dir = $self->root->child('.raider-hall', 'logs');
   $log_dir->mkpath unless -d $log_dir;
 
   require IO::Async::Process;
+  my $log_path = $log_dir->child("${slot}.log");
+
+  # Set up environment for child (local so doesn't affect parent)
+  local %ENV = %ENV;
+  $ENV{RAIDER_HALL_MODE} = '1';
+  $ENV{RAIDER_HALL_ROOT} = $self->root->stringify;
+  $ENV{RAIDER_HALL_SLOT} = $slot;
+  my $lib_path = $self->_raider_lib_path($base_name);
+  $ENV{PERL5LIB} = join ':', grep { defined } ($ENV{PERL5LIB}, $lib_path,
+    ($self->config->{longhouse} ? $self->longhouse_lib_path->stringify : ()));
+
+  my @exec_cmd = ('/bin/sh', '-c',
+    "exec >>$log_path 2>&1 && exec $^X " . join(' ', map { quotemeta($_) } @cmd)
+  );
   my $process = IO::Async::Process->new(
-    command => \@cmd,
-    env => \%env,
-    stdout => {
-      to => [qw( append /dev/null )],
-      ( -f '/dev/null' ? () : (into => '/dev/null') ),
-    },
-    stderr => {
-      to => [qw( append /dev/null )],
-      ( -f '/dev/null' ? () : (into => '/dev/null') ),
-    },
+    command => \@exec_cmd,
     on_finish => sub {
       my ($proc, $exitcode) = @_;
       my $pid = $proc->pid;
@@ -570,7 +565,7 @@ sub _remove_pidfile {
 
 sub DEMOLISH {
   my ($self) = @_;
-  $self->_remove_pidfile if defined $$self;
+  $self->_remove_pidfile if $self;
 }
 
 __PACKAGE__->meta->make_immutable;

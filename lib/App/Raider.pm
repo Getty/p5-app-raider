@@ -14,6 +14,7 @@ use YAML::PP ();
 use App::Raider::FileTools qw( build_file_tools_server );
 use App::Raider::WebTools  qw( build_web_tools_server );
 use App::Raider::PerlTools qw( build_perl_tools_server );
+use App::Raider::Packs     qw( build_packs );
 use Langertha::Raider;
 
 =head1 SYNOPSIS
@@ -230,20 +231,6 @@ How you work:
   - Skip irreversible ops (rm -rf, git reset --hard, force pushes) unless
     user explicit ask.
 
-Communication (Caveman mode, default):
-  - Terse. Drop articles (a/an/the), filler (just/really/basically/
-    actually/simply), pleasantries (sure/certainly/of course/happy to),
-    hedging (maybe/perhaps/I think).
-  - Fragments OK. Short synonyms (big not extensive, fix not "implement
-    a solution for").
-  - Technical terms exact. Code blocks unchanged. Errors quoted exact.
-  - Pattern: `[thing] [action] [reason]. [next step].`
-  - Not: "Sure! I'd be happy to help. The issue is likely caused by..."
-  - Yes: "Bug in auth middleware. Token check uses `<` not `<=`. Fix:"
-  - Drop caveman for: destructive ops warnings, irreversible confirmations,
-    multi-step sequences where fragment order could confuse. Resume after.
-  - User says "normal mode" or "stop caveman": revert, write normal.
-
 You have no yield / ask / abort tool. Task done: plain text reply. CLI
 loops back to user.
 EOM
@@ -260,6 +247,11 @@ EOM
   if (@skills) {
     $base .= "\n\n---\nLoaded skills (domain knowledge the user enabled for this session):\n\n"
            . join("\n\n", @skills) . "\n";
+  }
+
+  my @pack_texts = $self->packs->skill_texts;
+  if (@pack_texts) {
+    $base .= "\n\n---\nActive packs:\n\n" . join("\n\n", @pack_texts) . "\n";
   }
 
   return $base;
@@ -349,6 +341,40 @@ has preferred_lib_target => (
   isa       => 'Str',
   predicate => 'has_preferred_lib_target',
 );
+
+=attr packs
+
+ArrayRef of pack names to activate. Defaults to the pack defaults
+(caveman). Can be set via C<packs: [caveman, git-guru]> in F<.raider.yml>.
+
+=cut
+
+has packs => (
+  is      => 'ro',
+  isa     => 'ArrayRef[Str]',
+  lazy    => 1,
+  builder => '_build_packs',
+);
+
+sub _build_packs {
+  my ($self) = @_;
+  my $yml = $self->_load_yml_options;
+  my $yml_packs = $yml->{packs};
+
+  my $collection = build_packs(root => $self->root);
+
+  if ($yml_packs && ref $yml_packs eq 'ARRAY' && @$yml_packs) {
+    # Explicit packs from config — enable exactly those
+    for my $name (@{$collection->all_pack_names}) {
+      $collection->disable($name);
+    }
+    for my $name (@$yml_packs) {
+      $collection->enable($name);
+    }
+  }
+
+  return $collection;
+}
 
 =attr max_context_tokens
 

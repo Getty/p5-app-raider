@@ -220,6 +220,11 @@ sub banner {
     : 'none';
   print c(meta => "skills:   "), c(title => $skills_line), "\n";
 
+  my @active_packs = @{$app->packs->active_pack_names};
+  if (@active_packs) {
+    print c(meta => "packs:    "), c(title => join(', ', @active_packs)), "\n";
+  }
+
   for my $ign (@ignored) {
     print c(meta => "          "), c(warn => "seeing $ign->{path}, ignoring (use --$ign->{profile} to load)"), "\n";
   }
@@ -357,6 +362,10 @@ sub handle_slash {
     print_meta("  /skill-claude [PATH]  export Claude Code SKILL.md with frontmatter");
     print_meta("  /model [NAME]         set+save model to .raider.yml");
     print_meta("  /model list [FILTER]  list available models (optionally filtered)");
+    print_meta("  /packs                list all available packs and their state");
+    print_meta("  /pack on NAME         enable a pack (toggle on)");
+    print_meta("  /pack off NAME        disable a pack");
+    print_meta("  /pack NAME            toggle pack on/off");
     print_meta("  /quit /exit :q        leave the REPL");
     return;
   }
@@ -450,6 +459,74 @@ sub handle_slash {
     }
     persist_model($app->root, $arg);
     print c(meta => "model saved: "), c(title => $arg), c(meta => " (takes effect on next start)"), "\n";
+    return;
+  }
+  if ($cmd eq 'packs') {
+    my $collection = $app->packs;
+    my @all = @{$collection->all_pack_names};
+    if (!@all) {
+      print_meta("no packs available.");
+      return;
+    }
+    print_meta("packs:");
+    for my $name (sort @all) {
+      my $info = $collection->pack_info($name);
+      my $active = $info->{is_active} ? c(accent => '*') : ' ';
+      my $grp = $info->{exclusive_group};
+      print "  $active $name ", c(meta => "($grp)"), "\n";
+    }
+    return;
+  }
+  if ($cmd eq 'pack') {
+    my $collection = $app->packs;
+    my ($subcmd, $name) = split /\s+/, $arg, 2;
+    $name //= '';
+    $subcmd //= '';
+
+    if (!$name && ($subcmd eq '' || $subcmd eq 'list')) {
+      # /packs was handled above, so empty pack goes to error
+      print_err("usage: /pack on NAME, /pack off NAME, or /pack NAME (toggle)");
+      return;
+    }
+
+    if ($subcmd eq 'on') {
+      $collection->enable($name);
+      $app->reload_mission;
+      print_meta("pack enabled: $name");
+      return;
+    }
+    if ($subcmd eq 'off') {
+      $collection->disable($name);
+      $app->reload_mission;
+      print_meta("pack disabled: $name");
+      return;
+    }
+
+    # Toggle
+    if ($subcmd eq '') {
+      $subcmd = $name;
+      $name = '';
+    }
+    if ($name eq '' && grep { $subcmd eq $_ } @{$collection->all_pack_names}) {
+      # Direct /pack NAME (no subcmd)
+      $name = $subcmd;
+      $subcmd = '';
+    }
+
+    if ($name eq '') {
+      print_err("usage: /pack on NAME, /pack off NAME, or /pack NAME (toggle)");
+      return;
+    }
+
+    if ($subcmd eq '' || $subcmd eq 'toggle') {
+      $collection->toggle($name);
+      $app->reload_mission;
+      my $now = $collection->is_active($name) ? 'enabled' : 'disabled';
+      print_meta("pack $name $now.");
+      return;
+    }
+
+    print_err("unknown /pack subcommand: $subcmd (try /help)");
     return;
   }
   print_err("unknown command: /$cmd (try /help)");

@@ -1,0 +1,10 @@
+#!/usr/bin/env perl
+# ABSTRACT: Raider Hall daemon CLI
+
+use strict;
+use warnings;
+
+require App::Raider::Hall::CLI;
+App::Raider::Hall::CLI->main(@ARGV);
+
+1;

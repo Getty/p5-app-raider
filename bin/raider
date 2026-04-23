@@ -19,6 +19,14 @@ use Langertha::Raider;
 binmode STDOUT, ':encoding(UTF-8)';
 binmode STDIN,  ':encoding(UTF-8)';
 
+# --- Hall dispatch (raider hall ...) ---------------------------------
+if (@ARGV && $ARGV[0] eq 'hall') {
+  shift @ARGV;
+  require App::Raider::Hall::CLI;
+  App::Raider::Hall::CLI->main(@ARGV);
+  exit;
+}
+
 # --- Palette: blue tones + yellow accents -------------------------------
 
 my %C = (

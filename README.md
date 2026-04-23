@@ -408,16 +408,31 @@ Events from the hall bus (`raider.*`) are forwarded to the client as
 `tool_use` blocks, segmented `agent_message_chunk`s, `fs/*` push edits)
 is on the roadmap.
 
-Quick smoketest:
+### ACP client — `raider acp`
+
+The same binary ships a small ACP client so you can drive any
+conforming ACP agent (the hall or someone else's) without wiring up a
+separate tool:
 
 ```bash
-raider hall start --daemon --acp-port 38421
+# Handshake / dump capabilities
+raider acp ping 127.0.0.1:38421
 
-# talk to it like any JSON-RPC server
-nc 127.0.0.1 38421 <<'EOF'
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
-EOF
+# One-shot — open a session, send one prompt, exit on stopReason
+raider acp prompt 127.0.0.1:38421 --raider bjorn \
+    "summarise the last 10 commits"
+
+# Interactive REPL — session stays alive between turns, /cancel
+# sends session/cancel, /quit exits
+raider acp connect 127.0.0.1:38421 --raider lagertha
 ```
+
+`--json` on `prompt` / `connect` also streams the raw JSON-RPC frames
+to stderr, which is handy when debugging the server side.
+
+Under the hood this is just `App::Raider::ACP::Client` — a tiny
+blocking JSON-RPC 2.0 line-framed client — so you can embed the same
+thing into your own Perl without shelling out.
 
 ### Hall events
 
@@ -440,10 +455,42 @@ unix socket). Subscribe with `{"type":"subscribe","payload":{"filter":"raider."}
 
 ### systemd
 
+**Native install** — raider is on the host as a regular binary:
+
 ```bash
-raider hall install           # writes ~/.config/systemd/user/raider-hall.service
-systemctl --user start raider-hall
+raider hall install                         # default unit
+raider hall install --acp-port 38421        # with ACP exposed
+systemctl --user daemon-reload
+systemctl --user enable --now raider-hall
 ```
+
+**Docker install** — raider only lives inside a container image. Run
+`install` from *outside* the container (on the host, with raider
+installed as a CPAN module) *or* from inside the container with
+`--docker` (the safety check forces you to choose):
+
+```bash
+# On the host:
+raider hall install --docker \
+    --image raudssus/raider:latest \
+    --acp-port 38421                       # published out of the container
+```
+
+The generated unit runs `docker run --rm --name raider-hall -v
+$PWD:/work …`, forwards every known `*_API_KEY` env var, and
+publishes the ACP port with `-p`. When `--acp-port` is set, the unit
+also passes `--acp-host 0.0.0.0` to the in-container raider so the
+listener is reachable outside the container.
+
+If you want to see the unit without writing it:
+
+```bash
+raider hall install --docker --acp-port 38421 --stdout
+```
+
+Running `raider hall install` inside a container *without* `--docker`
+or `--host` is refused — the resulting unit would reference
+container-internal paths the host can't reach.
 
 [acp]: https://agentclientprotocol.com/
 

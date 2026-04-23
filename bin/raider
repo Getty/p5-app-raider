@@ -27,6 +27,14 @@ if (@ARGV && $ARGV[0] eq 'hall') {
   exit;
 }
 
+# --- ACP client dispatch (raider acp ...) ----------------------------
+if (@ARGV && $ARGV[0] eq 'acp') {
+  shift @ARGV;
+  require App::Raider::ACP::CLI;
+  App::Raider::ACP::CLI->main(@ARGV);
+  exit;
+}
+
 # --- Palette: blue tones + yellow accents -------------------------------
 
 my %C = (

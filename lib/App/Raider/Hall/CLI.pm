@@ -485,20 +485,65 @@ EOF
 
 sub run_install {
   my (@args) = @_;
-  my $dir = hall_dir(@args);
+  my %opt;
+  local @ARGV = @args;
+  Getopt::Long::GetOptions(\%opt,
+    'docker', 'host', 'image=s', 'name=s',
+    'acp-port=i', 'acp-host=s', 'stdout', 'help');
+  return print_install_help() if $opt{help};
+
+  my $dir = hall_dir(@ARGV);
   $dir = path($dir);
-
-  my $unit_name = 'raider-hall';
-  my $xdg = $ENV{XDG_CONFIG_HOME} // path($ENV{HOME})->child('.config');
-  my $systemd_dir = $xdg->child('systemd', 'user');
-
-  $systemd_dir->mkpath unless -d $systemd_dir;
-
-  my $unit_file = $systemd_dir->child("$unit_name.service");
-  my $raider_bin = path($0)->absolute->stringify;
   my $cwd = $dir->stringify;
+  my $unit_name = $opt{name} // 'raider-hall';
 
-  my $unit_content = <<"EOF";
+  # Detection: inside a container without --docker/--host is almost
+  # always a mistake (the unit would point at binary paths the host
+  # can't reach). Refuse unless one is set explicitly.
+  my $in_container = -f '/.dockerenv' || ($ENV{container} // '') ne '';
+  if ($in_container && !$opt{docker} && !$opt{host}) {
+    die "Detected container environment (/.dockerenv present).\n"
+      . "Pick one:\n"
+      . "  --docker        emit a unit that runs `docker run` on the host\n"
+      . "  --host          emit a unit that runs the in-container raider binary\n"
+      . "                  directly (you know what you're doing)\n"
+      . "  --stdout        print the unit to stdout instead of writing to ~/.config\n";
+  }
+
+  my $unit_content = $opt{docker}
+    ? _render_docker_unit($cwd, $unit_name, \%opt)
+    : _render_native_unit($cwd, \%opt);
+
+  if ($opt{stdout}) {
+    print $unit_content;
+    return 0;
+  }
+
+  my $xdg = $ENV{XDG_CONFIG_HOME} // path($ENV{HOME})->child('.config');
+  my $systemd_dir = path($xdg)->child('systemd', 'user');
+  $systemd_dir->mkpath unless -d $systemd_dir;
+  my $unit_file = $systemd_dir->child("$unit_name.service");
+  $unit_file->spew_utf8($unit_content);
+
+  print "Installed $unit_file\n";
+  if ($opt{docker}) {
+    print "(docker-mode unit — needs docker on the host)\n";
+  }
+  print "Run:\n";
+  print "  systemctl --user daemon-reload\n";
+  print "  systemctl --user enable --now $unit_name\n";
+  return 0;
+}
+
+sub _render_native_unit {
+  my ($cwd, $opt) = @_;
+  my $raider_bin = path($0)->absolute->stringify;
+  my @start = ($raider_bin, 'hall', 'start');
+  push @start, '--acp-port', $opt->{'acp-port'} if $opt->{'acp-port'};
+  push @start, '--acp-host', $opt->{'acp-host'} if $opt->{'acp-host'};
+  my $exec = join ' ', map { /\s/ ? qq("$_") : $_ } @start;
+
+  return <<"EOF";
 [Unit]
 Description=Raider Hall daemon
 After=network.target
@@ -506,26 +551,93 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$cwd
-ExecStart=$raider_bin hall start
+ExecStart=$exec
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
 EOF
+}
 
-  $unit_file->spew_utf8($unit_content);
+sub _render_docker_unit {
+  my ($cwd, $unit_name, $opt) = @_;
+  my $image = $opt->{image} // 'raudssus/raider:latest';
+  my $container_name = $unit_name;
 
-  print "Installed $unit_file\n";
-  print "Run: systemctl --user start $unit_name\n";
-  return 0;
+  my @docker = (
+    '/usr/bin/docker', 'run', '--rm',
+    '--name', $container_name,
+    '-v', "$cwd:/work",
+    '-w', '/work',
+  );
+
+  # Publish the ACP port out of the container when asked for.
+  if ($opt->{'acp-port'}) {
+    push @docker, '-p', "$opt->{'acp-port'}:$opt->{'acp-port'}";
+  }
+
+  # Forward standard API-key env vars — systemd EnvironmentFile is the
+  # cleaner long-term answer, but -e on the docker command line is
+  # explicit and survives without extra files.
+  for my $e (qw(
+    ANTHROPIC_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY GROQ_API_KEY
+    MISTRAL_API_KEY GEMINI_API_KEY MINIMAX_API_KEY CEREBRAS_API_KEY
+    OPENROUTER_API_KEY BRAVE_API_KEY SERPER_API_KEY
+    GOOGLE_API_KEY GOOGLE_CSE_ID
+  )) {
+    push @docker, '-e', $e;
+  }
+
+  push @docker, $image, 'hall', 'start';
+  push @docker, '--acp-port', $opt->{'acp-port'} if $opt->{'acp-port'};
+  push @docker, '--acp-host', ($opt->{'acp-host'} // '0.0.0.0')
+    if $opt->{'acp-port'};  # inside container must bind to 0.0.0.0 to be reachable
+
+  my $exec_start = join ' ', map { /\s/ ? qq("$_") : $_ } @docker;
+  my $exec_stop  = qq(/usr/bin/docker stop $container_name);
+
+  return <<"EOF";
+[Unit]
+Description=Raider Hall daemon (Docker)
+Requires=docker.service
+After=docker.service network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$cwd
+ExecStartPre=-/usr/bin/docker stop $container_name
+ExecStartPre=-/usr/bin/docker rm $container_name
+ExecStart=$exec_start
+ExecStop=$exec_stop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
 }
 
 sub print_install_help {
   print <<"EOF";
-raider hall install [DIR]
+raider hall install [DIR] [options]
 
-Install systemd user unit for the hall in DIR (default: cwd).
+Write a systemd user unit that starts the hall daemon.
+
+Options:
+  --docker          Emit a Docker unit (docker run raudssus/raider …)
+  --host            Emit a native unit even inside a container
+                    (overrides the safety check)
+  --image IMG       Docker image (default: raudssus/raider:latest)
+  --name NAME       Unit / container name (default: raider-hall)
+  --acp-port N      Pass --acp-port N to raider hall start; for --docker
+                    this also publishes the port out of the container
+  --acp-host H      Pass --acp-host H to raider hall start
+  --stdout          Print the unit to stdout instead of writing it
+
+Inside a container, --docker or --host must be chosen explicitly —
+otherwise the unit would point at container-internal paths the host
+cannot reach.
 EOF
   exit 0;
 }

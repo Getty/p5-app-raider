@@ -702,6 +702,7 @@ sub shutdown {
     kill 'TERM', $r->pid if $r->pid && $r->pid > 0;
   }
 
+  require IO::Async::Timer::Countdown;
   my $timer = IO::Async::Timer::Countdown->new(
     delay => 5,
     on_expire => sub {
@@ -712,6 +713,13 @@ sub shutdown {
     },
   );
   $self->loop->add($timer);
+  $timer->start;
+
+  # With no children running, stop immediately rather than waiting the
+  # full 5s grace period.
+  if (!keys %{$self->raiders}) {
+    $self->loop->later(sub { $self->loop->stop });
+  }
 }
 
 sub _write_pidfile {

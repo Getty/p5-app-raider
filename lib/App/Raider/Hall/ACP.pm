@@ -255,13 +255,21 @@ sub _attach_subscription {
     return unless ($evt->{id} // '') eq $raider_id;
 
     if ($t eq 'raider.done') {
-      $self->_notify($stream, 'session/update', {
-        sessionId => $self->_session_id_for($session),
-        update => {
-          sessionUpdate => 'agent_message_chunk',
-          content => { type => 'text', text => '[raider finished]' },
-        },
-      });
+      # The raider was spawned with --json, so its captured log is a
+      # single JSON blob { response, metrics, elapsed }. Read it and
+      # forward the actual response as a final agent_message_chunk
+      # before closing the turn — otherwise the client only ever sees
+      # status events.
+      my $body = $self->_read_raider_response($raider_id);
+      if (defined $body && length $body) {
+        $self->_notify($stream, 'session/update', {
+          sessionId => $self->_session_id_for($session),
+          update => {
+            sessionUpdate => 'agent_message_chunk',
+            content => { type => 'text', text => $body },
+          },
+        });
+      }
       my $rid = delete $session->{pending_request_id};
       $self->_reply($stream, $rid, {
         stopReason => $evt->{signaled} ? 'cancelled' : 'end_turn',
@@ -301,6 +309,24 @@ sub _attach_subscription {
     stream => $fake_stream, filter => 'raider.',
   };
   $session->{_sub_stream} = $fake_stream;
+}
+
+sub _read_raider_response {
+  my ($self, $raider_id) = @_;
+  # Raiders live in the hall for a moment after raider.done fires; grab
+  # the log path while the record is still there.
+  my $raider;
+  for my $r (values %{ $self->hall->raiders }) {
+    if ($r->id eq $raider_id) { $raider = $r; last }
+  }
+  return unless $raider;
+  my $log = $raider->log_path;
+  return unless -f $log;
+  my $raw = eval { $log->slurp_utf8 };
+  return unless defined $raw && length $raw;
+  my $data = eval { JSON::MaybeXS->new->decode($raw) };
+  return $raw unless ref $data eq 'HASH';  # not JSON? forward verbatim
+  return $data->{response} // $data->{error};
 }
 
 sub _session_id_for {

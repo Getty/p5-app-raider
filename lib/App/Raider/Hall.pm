@@ -610,16 +610,19 @@ sub _spawn_raider {
 
 sub _raider_bin {
   my ($self) = @_;
-  # Find the raider binary next to the currently-running script, or fall
-  # back to $PATH. Avoid recursing through $0 if we were invoked as
-  # `raider-hall` which lives alongside `raider`.
+  # Explicit override wins — useful in tests and non-standard installs.
+  return $ENV{RAIDER_HALL_RAIDER_BIN}
+    if $ENV{RAIDER_HALL_RAIDER_BIN} && -x $ENV{RAIDER_HALL_RAIDER_BIN};
+
+  # Otherwise: next to the currently-running script (raider-hall lives
+  # alongside raider in a normal install), then $PATH.
   my $here = path($0)->absolute;
   my $sibling = $here->parent->child('raider');
   return $sibling->stringify if -x $sibling;
   require File::Which;
   my $which = File::Which::which('raider');
   return $which if $which;
-  die "Cannot find 'raider' binary (looked next to $here and in \$PATH)";
+  die "Cannot find 'raider' binary (set RAIDER_HALL_RAIDER_BIN or put it in \$PATH)";
 }
 
 sub _raider_lib_path {

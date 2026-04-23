@@ -344,14 +344,16 @@ has preferred_lib_target => (
 
 =attr packs
 
-ArrayRef of pack names to activate. Defaults to the pack defaults
-(caveman). Can be set via C<packs: [caveman, git-guru]> in F<.raider.yml>.
+L<App::Raider::Packs::Collection> of the installed packs. Defaults
+come from the bundled C<share/packs/> plus C<$RAIDER_PACK_DIRS>; the
+C<packs:> key in F<.raider.yml> (C<[caveman, git-guru]>) enables the
+listed ones exclusively.
 
 =cut
 
 has packs => (
   is      => 'ro',
-  isa     => 'ArrayRef[Str]',
+  isa     => 'App::Raider::Packs::Collection',
   lazy    => 1,
   builder => '_build_packs',
 );

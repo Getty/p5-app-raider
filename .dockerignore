@@ -1,5 +1,6 @@
 .git
 .gitignore
+.codex
 .claude
 App-Raider-*
 !App-Raider-*.tar.gz

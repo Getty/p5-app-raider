@@ -51,7 +51,8 @@ GetOptions(
   'max-iterations=i' => \$opt{max_iterations},
   'no-color'         => \$opt{no_color},
   'trace!'           => \$opt{trace},
-  'customize-prompt'     => \$opt{customize_prompt},
+  'perl'             => \$opt{perl},
+  'customize-prompt' => \$opt{customize_prompt},
   'claude'               => \$opt{profile_claude},
   'openai|codex'         => \$opt{profile_openai},
   'skills=s@'            => \@{ $opt{skill_dirs} //= [] },
@@ -98,6 +99,7 @@ Options:
                            (default: 10000 — effectively unlimited)
       --no-color           Disable ANSI colors
       --no-trace           Hide live tool-call progress output
+      --perl               Enable perl_eval / perl_check / perl_cpanm tools
       --customize-prompt   Launch the prompt-builder at startup
       --claude             Load Claude Code layout: CLAUDE.md +
                            .claude/skills/*/SKILL.md.
@@ -125,6 +127,7 @@ $args{root}           = $opt{root}           if defined $opt{root};
 $args{mission}        = $opt{mission}        if defined $opt{mission};
 $args{api_key}        = $opt{api_key}        if defined $opt{api_key};
 $args{trace}          = $opt{trace}          if defined $opt{trace};
+$args{perl}           = $opt{perl}           if defined $opt{perl};
 $args{max_iterations} = $opt{max_iterations} if defined $opt{max_iterations};
 $args{engine_options} = \%engine_opts        if %engine_opts;
 

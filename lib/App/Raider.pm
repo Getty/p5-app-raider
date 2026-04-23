@@ -13,6 +13,7 @@ use YAML::PP ();
 
 use App::Raider::FileTools qw( build_file_tools_server );
 use App::Raider::WebTools  qw( build_web_tools_server );
+use App::Raider::PerlTools qw( build_perl_tools_server );
 use Langertha::Raider;
 
 =head1 SYNOPSIS
@@ -322,6 +323,33 @@ has trace => (
   default => sub { -t STDOUT ? 1 : 0 },
 );
 
+=attr perl
+
+Enable the PerlTools MCP server (perl_eval, perl_check, perl_cpanm).
+Off by default; set via C<--perl> CLI flag or C<perl: true> in F<.raider.yml>.
+
+=cut
+
+has perl => (
+  is      => 'ro',
+  isa     => 'Bool',
+  default => 0,
+);
+
+=attr preferred_lib_target
+
+Override the default local::lib target for perl_cpanm. When unset,
+defaults to F<.raider/lib/> for standalone raiders. Can be set via
+C<preferred_lib_target> in F<.raider.yml>.
+
+=cut
+
+has preferred_lib_target => (
+  is        => 'ro',
+  isa       => 'Str',
+  predicate => 'has_preferred_lib_target',
+);
+
 =attr max_context_tokens
 
 Trigger history auto-compression once the last prompt exceeds
@@ -533,6 +561,8 @@ sub _engine_class {
 sub _build_mcps {
   my ($self) = @_;
 
+  my $yml = $self->_load_yml_options;
+
   my $files = build_file_tools_server(root => $self->root);
 
   my $bash = MCP::Run::Bash->new(
@@ -551,6 +581,21 @@ sub _build_mcps {
     $self->loop->add($client);
     push @clients, $client;
   }
+
+  if ($self->perl || $yml->{perl}) {
+    my $lib_target = $self->has_preferred_lib_target
+      ? $self->preferred_lib_target
+      : ($yml->{preferred_lib_target} // undef);
+    my $perl = build_perl_tools_server(
+      root       => $self->root,
+      loop       => $self->loop,
+      lib_target => $lib_target,
+    );
+    my $client = Net::Async::MCP->new(server => $perl);
+    $self->loop->add($client);
+    push @clients, $client;
+  }
+
   return \@clients;
 }
 

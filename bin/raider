@@ -590,26 +590,53 @@ if ($opt{interactive}) {
     $impl     = $term->ReadLine;
     $histfile = path($ENV{HOME} // '.')->child('.raider_history')->stringify;
     eval { $term->ReadHistory($histfile) } if -f $histfile;
+    # Take SIGINT away from readline so our Perl handler always runs — with
+    # catch_signals=1 (the default) Gnu's internal handler swallows Ctrl-C and
+    # ours only fires after the next Return, which is the Docker annoyance.
+    eval { $term->Attribs->{catch_signals} = 0 };
     # Gray prompt, plain-color user input. Non-printing sequences are
     # wrapped in \x01...\x02 so readline computes prompt width correctly.
     my $ps = "\x01" . color('bright_black') . "\x02"
            . 'raider> '
            . "\x01" . color('reset') . "\x02";
     $read_line = sub { $term->readline($ps) };
-    # Save history on Ctrl-C / SIGTERM so entries survive interrupted sessions
-    my $save_and_exit = sub {
-      eval { $term->WriteHistory($histfile) };
-      print c(meta => "\nbye."), "\n";
-      exit 0;
-    };
-    $SIG{INT}  = $save_and_exit;
-    $SIG{TERM} = $save_and_exit;
   }
   else {
     $impl      = 'IO::Prompt::Tiny (install Term::ReadLine::Gnu for history)';
     $read_line = sub { prompt('raider>') };
-    $SIG{INT}  = sub { print c(meta => "\nbye."), "\n"; exit 0 };
   }
+
+  # Two-strike Ctrl-C: first press warns, second within 2s exits. Saves the
+  # user from accidentally killing a running raid and removes the old
+  # "Ctrl-C + Return" Docker quirk.
+  my $save_history = sub {
+    eval { $term->WriteHistory($histfile) } if $have_gnu && defined $histfile;
+  };
+  my $last_sigint = 0;
+  $SIG{INT} = sub {
+    my $now = time;
+    if ($last_sigint && $now - $last_sigint <= 2) {
+      $save_history->();
+      print c(meta => "\nbye."), "\n";
+      exit 0;
+    }
+    $last_sigint = $now;
+    print c(meta => "\n(press Ctrl-C again within 2s to quit)"), "\n";
+    if ($have_gnu) {
+      eval {
+        $term->replace_line('', 0);
+        $term->Attribs->{point} = 0;
+        $term->Attribs->{end}   = 0;
+        $term->on_new_line;
+        $term->redisplay;
+      };
+    }
+  };
+  $SIG{TERM} = sub {
+    $save_history->();
+    print c(meta => "\nbye."), "\n";
+    exit 0;
+  };
 
   # Collect active profile names: CLI flags + any persisted in .raider.yml.
   my %seen_prof;
@@ -694,7 +721,7 @@ else {
 =head1 DESCRIPTION
 
 F<raider> is the CLI front-end for L<App::Raider>. It wires an LLM engine
-(via L<Langertha>) to a filesystem tool server and L<MCP::Server::Run::Bash>,
+(via L<Langertha>) to a filesystem tool server and L<MCP::Run::Bash>,
 then runs the L<Langertha::Raider> multi-turn agent loop on your prompt.
 
 Interactive mode (C<-i>) opens a REPL with conversation history retained

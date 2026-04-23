@@ -5,11 +5,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential libssl-dev libreadline-dev git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . /tmp/raider-src
+# Dist::Zilla source trees have no Makefile.PL — build a tarball locally
+# with `dzil build` and pass the version as a build arg.
+ARG RAIDER_VERSION=0.002
+COPY App-Raider-${RAIDER_VERSION}.tar.gz /tmp/
 
-RUN cpanm --notest --installdeps /tmp/raider-src \
-    && cpanm --notest /tmp/raider-src \
-    && rm -rf /tmp/raider-src ~/.cpanm
+# REPL quality-of-life: Term::ReadLine::Gnu gives real line editing
+# (without it the stub backend breaks Backspace / history / cursor keys);
+# Term::Choose + Term::Table power /model list and similar pickers.
+RUN cpanm --notest Term::ReadLine::Gnu Term::Choose Term::Table \
+    && cpanm --notest /tmp/App-Raider-${RAIDER_VERSION}.tar.gz \
+    && rm -rf /tmp/App-Raider-*.tar.gz ~/.cpanm
 
 # ------------------------------------------------------------------ runtime-base
 FROM perl:5.40-slim AS runtime-base

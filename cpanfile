@@ -15,7 +15,7 @@ requires 'Term::ANSIColor';
 requires 'Langertha', '0.402';
 requires 'Net::Async::MCP';
 requires 'MCP::Server';
-requires 'MCP::Server::Run::Bash';
+requires 'MCP::Run::Bash';
 requires 'Net::Async::WebSearch';
 requires 'Net::Async::HTTP';
 requires 'HTML::TreeBuilder';

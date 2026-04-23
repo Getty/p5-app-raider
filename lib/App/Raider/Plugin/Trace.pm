@@ -6,8 +6,11 @@ use Moose;
 use Future::AsyncAwait;
 use Term::ANSIColor qw( colored );
 use JSON::MaybeXS ();
+use IO::Async::Timer::Periodic;
 
 extends 'Langertha::Plugin';
+
+my @SPINNER_FRAMES = ('⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏');
 
 =head1 SYNOPSIS
 
@@ -65,6 +68,70 @@ has token_stats => (
   default => sub { { prompt => 0, completion => 0, total => 0, calls => 0 } },
 );
 
+=attr loop
+
+Optional L<IO::Async::Loop> used to drive a small "thinking…" spinner while
+the LLM HTTP call is in flight. When absent, no spinner is shown.
+
+=cut
+
+has loop => (
+  is        => 'ro',
+  predicate => 'has_loop',
+);
+
+has _spinner_timer => ( is => 'rw', clearer => '_clear_spinner_timer' );
+has _spinner_idx   => ( is => 'rw', isa => 'Int', default => 0 );
+has _spinner_active=> ( is => 'rw', isa => 'Bool', default => 0 );
+
+sub _spinner_enabled {
+  my ($self) = @_;
+  return 0 unless $self->has_loop;
+  return 0 unless $self->color;
+  return 0 if $ENV{ANSI_COLORS_DISABLED};
+  return 0 unless -t STDOUT;
+  return 1;
+}
+
+sub _start_spinner {
+  my ($self) = @_;
+  return unless $self->_spinner_enabled;
+  return if $self->_spinner_active;
+  $self->_spinner_active(1);
+  $self->_spinner_idx(0);
+
+  my $tick = sub {
+    my $idx   = $self->_spinner_idx;
+    my $frame = $SPINNER_FRAMES[$idx % @SPINNER_FRAMES];
+    $self->_spinner_idx($idx + 1);
+    local $| = 1;
+    print "\r", $self->_c(accent => $frame), ' ', $self->_c(iter => 'thinking…'), "\033[K";
+  };
+  $tick->();
+
+  my $timer = IO::Async::Timer::Periodic->new(
+    interval       => 0.1,
+    first_interval => 0.1,
+    on_tick        => $tick,
+  );
+  $self->loop->add($timer);
+  $timer->start;
+  $self->_spinner_timer($timer);
+}
+
+sub _stop_spinner {
+  my ($self) = @_;
+  return unless $self->_spinner_active;
+  $self->_spinner_active(0);
+  if (my $timer = $self->_spinner_timer) {
+    $timer->stop;
+    eval { $self->loop->remove($timer) };
+    $self->_clear_spinner_timer;
+  }
+  local $| = 1;
+  print "\r\033[K";
+}
+
 sub _extract_usage {
   my ($data) = @_;
   return unless ref $data eq 'HASH';
@@ -115,8 +182,15 @@ sub _summarize_args {
   return join(' ', @parts);
 }
 
+async sub plugin_before_llm_call {
+  my ($self, $conversation, $iteration) = @_;
+  $self->_start_spinner;
+  return $conversation;
+}
+
 async sub plugin_after_llm_response {
   my ($self, $data, $iteration) = @_;
+  $self->_stop_spinner;
 
   my $usage = _extract_usage($data);
   if ($usage) {
@@ -132,6 +206,7 @@ async sub plugin_after_llm_response {
 
 async sub plugin_before_tool_call {
   my ($self, $name, $input) = @_;
+  $self->_stop_spinner;
   my $args = $self->_summarize_args($input);
   print
     $self->_c(tool => "> $name"),

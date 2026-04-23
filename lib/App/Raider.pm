@@ -576,9 +576,9 @@ sub _build_raider {
   my ($self) = @_;
   my @plugins;
   if ($self->trace) {
-    # Pass as name(s) so PluginHost injects `host` (required by
-    # Langertha::Plugin). The flat-list form is [Name, {args}, Name, ...].
-    push @plugins, '+App::Raider::Plugin::Trace';
+    # Pass as name + {args}; PluginHost still injects `host`. The `loop` arg
+    # lets the plugin drive a spinner during LLM HTTP calls.
+    push @plugins, '+App::Raider::Plugin::Trace', { loop => $self->loop };
   }
   push @plugins, '+App::Raider::Plugin::Situation';
   return Langertha::Raider->new(

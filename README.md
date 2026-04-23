@@ -39,11 +39,29 @@ essential loop: one terminal, one conversation, a small fixed toolbox, and
 
 ## Quick start
 
+From CPAN:
+
+```bash
+cpanm App::Raider
+export ANTHROPIC_API_KEY=...     # or OPENAI_API_KEY, GROQ_API_KEY, ...
+raider                           # REPL opens in the current directory
+```
+
+From a git checkout:
+
 ```bash
 cpanm --installdeps .
-export ANTHROPIC_API_KEY=...     # or OPENAI_API_KEY, GROQ_API_KEY, ...
-perl -Ilib bin/raider            # REPL opens in the current directory
+perl -Ilib bin/raider
 ```
+
+Or via Docker — no Perl toolchain required:
+
+```bash
+docker pull raudssus/raider
+docker run --rm -it -v "$PWD:/work" -e ANTHROPIC_API_KEY raudssus/raider
+```
+
+See the [Docker](#docker) section below for the recommended shell alias.
 
 Then tell Langertha what to do:
 
@@ -283,24 +301,38 @@ prove -lv t/10_filetools.t   # Single test, verbose
 Build system: [Dist::Zilla](https://metacpan.org/dist/Dist-Zilla) with
 `[@Author::GETTY]`.
 
+A checked-in `cpanfile.snapshot` pins the exact dependency versions that
+last produced a known-good build. To install against it use
+[Carton](https://metacpan.org/dist/Carton):
+
+```bash
+carton install --deployment   # installs into ./local/ from snapshot
+carton exec -- perl -Ilib bin/raider
+```
+
+Refresh the snapshot whenever `cpanfile` changes:
+
+```bash
+carton install                # updates cpanfile.snapshot
+```
+
 ## Docker
 
-A multi-stage `Dockerfile` is included. Two build targets:
+A prebuilt image is published on Docker Hub as
+[**`raudssus/raider`**](https://hub.docker.com/r/raudssus/raider). The
+bundled `Dockerfile` is multi-stage with two runtime targets:
 
-- `runtime-root` — runs as root. Good for one-off sessions where ownership
-  of files under `/work` doesn't matter.
+- `runtime-root` *(default on Docker Hub, tag `:latest` / `:<version>`)* —
+  runs as root. Good for one-off sessions where ownership of files under
+  `/work` doesn't matter.
 - `runtime-user` — runs as a non-root user, uid/gid matchable to the host.
   Good for interactive use inside real project trees.
 
-Build the user-target image with your current uid/gid so files written by
-raider keep your ownership:
+### Pull from Docker Hub
 
 ```bash
-docker build \
-  --target runtime-user \
-  --build-arg RAIDER_UID=$(id -u) \
-  --build-arg RAIDER_GID=$(id -g) \
-  -t raider:latest .
+docker pull raudssus/raider              # rolling latest
+docker pull raudssus/raider:0.002        # pinned version
 ```
 
 Recommended shell alias — mounts `$PWD` into `/work` and forwards the
@@ -310,7 +342,7 @@ relevant API-key env vars:
 raider() {
   docker run --rm -it \
     -v "$PWD:/work" \
-    -v "$HOME/.raider_history:/home/raider/.raider_history" \
+    -v "$HOME/.raider_history:/root/.raider_history" \
     -e ANTHROPIC_API_KEY \
     -e OPENAI_API_KEY \
     -e DEEPSEEK_API_KEY \
@@ -322,7 +354,7 @@ raider() {
     -e OPENROUTER_API_KEY \
     -e BRAVE_API_KEY -e SERPER_API_KEY \
     -e GOOGLE_API_KEY -e GOOGLE_CSE_ID \
-    raider:latest "$@"
+    raudssus/raider "$@"
 }
 ```
 
@@ -331,12 +363,60 @@ project and just type `raider` — the container sees the project, uses the
 API keys from your shell, and keeps your REPL history persistent across
 sessions via the mounted `.raider_history` file.
 
-For one-off root usage (no uid juggling, but files written as root):
+### Build locally
+
+Build the user-target image with your current uid/gid so files written by
+raider keep your ownership:
 
 ```bash
-docker build --target runtime-root -t raider:root .
-alias raider='docker run --rm -it -v "$PWD:/work" \
-  -e ANTHROPIC_API_KEY -e OPENAI_API_KEY raider:root'
+docker build \
+  --target runtime-user \
+  --build-arg RAIDER_UID=$(id -u) \
+  --build-arg RAIDER_GID=$(id -g) \
+  -t raider:local .
+```
+
+For a local root image:
+
+```bash
+docker build --target runtime-root -t raider:local-root .
+```
+
+### Publishing the Docker Hub image (maintainer)
+
+Automated — `dist.ini` declares `run_after_release` hooks that, after
+`dzil release` uploads the tarball to CPAN, also:
+
+1. Create (or update) the matching GitHub release and attach the
+   `App-Raider-%v.tar.gz` as an asset.
+2. `docker build` the `runtime-root` target tagged
+   `raudssus/raider:%v` and `raudssus/raider:latest`.
+3. `docker push` both tags.
+
+So the full release is just:
+
+```bash
+dzil release
+```
+
+You must be logged in to Docker Hub (`docker login`) and GitHub
+(`gh auth login`) for the hooks to succeed. Extra flags can be injected:
+
+```bash
+RAIDER_DOCKER_BUILD_ARGS='--platform linux/amd64,linux/arm64' dzil release
+```
+
+Manual fallback (if the hooks are skipped — e.g. `dzil release --no-release` is
+obviously not a thing, but for rebuilding an old release):
+
+```bash
+VERSION=0.002   # must be an already-released CPAN version
+cpanm --look App::Raider@$VERSION   # drops you in a build dir with the tarball
+# or: wget the tarball from MetaCPAN, place it next to the Dockerfile
+docker build --target runtime-root \
+  --build-arg RAIDER_VERSION=$VERSION \
+  -t raudssus/raider:$VERSION -t raudssus/raider:latest .
+docker push raudssus/raider:$VERSION raudssus/raider:latest
 ```
 
 ## License

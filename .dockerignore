@@ -2,7 +2,9 @@
 .gitignore
 .claude
 App-Raider-*
+!App-Raider-*.tar.gz
 *.tar.gz
+!App-Raider-*.tar.gz
 .build
 _build
 blib

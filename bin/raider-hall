@@ -1,5 +1,6 @@
 #!/usr/bin/env perl
 # ABSTRACT: Raider Hall daemon CLI
+# PODNAME: raider-hall
 
 use strict;
 use warnings;

@@ -21,6 +21,7 @@ requires 'Net::Async::HTTP';
 requires 'HTML::TreeBuilder';
 requires 'Schedule::Cron';
 requires 'File::Which';
+requires 'File::ShareDir';
 requires 'URI';
 
 recommends 'Term::ReadLine::Gnu';

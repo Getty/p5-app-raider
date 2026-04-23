@@ -347,6 +347,11 @@ raider hall kill <id>
 raider hall stop
 ```
 
+For a fuller walkthrough — three raiders, a cron entry, ACP open,
+Telegram commented out — copy
+[`examples/multi-raider-hall/`](examples/multi-raider-hall/) and read
+the README in it.
+
 ### `.raider-hall.yml`
 
 ```yaml

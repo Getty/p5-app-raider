@@ -54,11 +54,34 @@ sub build_packs {
 
   my @search_paths;
 
-  # Bundled share/packs/ — $INC{"App/Raider.pm"} is lib/App/Raider.pm
-  # so we need 3 parent() calls to reach the dist root
-  my $dist_pack_dir = path($INC{'App/Raider.pm'})
-    ->absolute->parent->parent->parent->child('share', 'packs');
-  push @search_paths, $dist_pack_dir if -d $dist_pack_dir;
+  # Bundled share/packs/ discovery, in order of likelihood:
+  #
+  #   1. File::ShareDir when installed from CPAN (ShareDir plugin
+  #      copies share/ into auto/share/dist/App-Raider/).
+  #   2. Source-tree layout: $INC{App/Raider.pm} = lib/App/Raider.pm,
+  #      sibling share/packs/ is three parents up after ->absolute.
+  #   3. blib layout used by `dzil test` / `make test`:
+  #      blib/lib/App/Raider.pm with share/packs/ one parent less.
+  #   4. $RAIDER_PACK_DIRS env for explicit overrides.
+  {
+    my $sd = eval {
+      require File::ShareDir;
+      File::ShareDir::dist_dir('App-Raider');
+    };
+    if ($sd) {
+      my $p = path($sd)->child('packs');
+      push @search_paths, $p if -d $p;
+    }
+  }
+
+  my $mod_path = path($INC{'App/Raider.pm'})->absolute;
+  for my $up (qw( parent_x3 parent_x2 )) {
+    my $base = $up eq 'parent_x3'
+      ? $mod_path->parent->parent->parent
+      : $mod_path->parent->parent;
+    my $cand = $base->child('share', 'packs');
+    push @search_paths, $cand if -d $cand;
+  }
 
   # $RAIDER_PACK_DIRS env
   if (my $env_dirs = $ENV{RAIDER_PACK_DIRS}) {

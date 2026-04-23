@@ -2,6 +2,56 @@ Revision history for App-Raider
 
 {{$NEXT}}
 
+    - Slice 1 — Perl-native tools: --perl unlocks perl_eval /
+      perl_check / perl_cpanm, a private local::lib per raider, and
+      auto-recovery on missing modules.
+    - Slice 2 — Packs: toggleable persona/power bundles under
+      share/packs/ (caveman/polite/teacher + git-guru/testing-fu/
+      perl-hacker); /packs + /pack on|off|NAME slash commands.
+    - Slice 3 — raider-hall daemon. `raider hall init` / `add-raider`
+      / `start` / `ps` / `spawn` / `attach` / `kill` / `logs`. JSONL
+      event bus + command protocol over a unix socket. 1name
+      singleton queues persisted across restarts. longhouse-or-per-
+      raider local::lib targets.
+    - Slice 4 — Hall extras: non-blocking Schedule::Cron integration
+      (IO::Async::Timer::Absolute + get_next_execution_time, opt-in
+      coalesce); multi-bot Telegram long-poll via Net::Async::HTTP
+      (the previous GET_form/POST_form calls didn't exist); MCP tool
+      catalog on .raider-hall.mcp; systemd --user unit via
+      `raider hall install`.
+    - Slice 5 — ACP adapter: App::Raider::Hall::ACP speaks JSON-RPC
+      2.0 line-framed over TCP (initialize / session/new /
+      session/prompt / session/cancel). Configure via
+      `acp: { port, host }` in .raider-hall.yml or `--acp-port N` on
+      `raider hall start`.
+    - ACP client: `raider acp ping|prompt|connect HOST:PORT` drives
+      any ACP-conforming agent from the same binary. Under the hood:
+      App::Raider::ACP::Client (blocking JSON-RPC 2.0).
+    - Hall-side raider tools: telegram_reply / hall_status /
+      hall_spawn are auto-exposed to raiders spawned under a hall
+      (keyed on $RAIDER_HALL_SOCKET).
+    - Docker-aware systemd install: inside a container, the unit is
+      written to `.raider-hall/systemd/<name>.service` (the bind-mount
+      surfaces it on the host), with a `cp` one-liner printed so the
+      user just copies into ~/.config/systemd/user/. `--docker`
+      template uses `docker run --rm -v $PWD:/work -e API_KEY…` and
+      publishes the ACP port with `-p`.
+    - Hall daemon fixes: double-$^X exec wrapper removed, mission
+      passes as a single argv (not split on whitespace), Schedule::Cron
+      no longer blocks the IO::Async loop, CHLD watcher removed (was
+      double-reaping with IO::Async::Process). Shutdown grace-period
+      timer is now actually started (was never firing).
+    - App::Raider.packs attribute retyped from ArrayRef[Str] to
+      App::Raider::Packs::Collection — the builder always returned a
+      Collection and every hall-spawned raider died with a Moose
+      type-constraint error the moment it built its mission.
+    - Tests: t/20_packs.t, t/20_perltools.t, t/30_hall.t, t/40_acp.t
+      (server dispatch), t/41_acp_client.t (forked hall, real
+      client/server over TCP), t/42_acp_live.t (forked hall + real
+      OpenAI API; gated on $OPENAI_API_KEY, 2–8s per run).
+    - examples/multi-raider-hall/ walkthrough showing a minimal
+      multi-raider village wired for cron + ACP.
+
 0.003     2026-04-21 01:46:09Z
 
     - Switch bash tool from the retired MCP::Server::Run::Bash to

@@ -104,6 +104,42 @@ has singleton_queues => (
   default => sub { {} },
 );
 
+has cron_scheduler => (
+  is => 'ro',
+  lazy => 1,
+  builder => '_build_cron_scheduler',
+);
+
+sub _build_cron_scheduler {
+  my ($self) = @_;
+  require App::Raider::Hall::Cron;
+  App::Raider::Hall::Cron->new(hall => $self);
+}
+
+has telegram => (
+  is => 'ro',
+  lazy => 1,
+  builder => '_build_telegram',
+);
+
+sub _build_telegram {
+  my ($self) = @_;
+  require App::Raider::Hall::Telegram;
+  App::Raider::Hall::Telegram->new(hall => $self);
+}
+
+has mcp_adapter => (
+  is => 'ro',
+  lazy => 1,
+  builder => '_build_mcp_adapter',
+);
+
+sub _build_mcp_adapter {
+  my ($self) = @_;
+  require App::Raider::Hall::MCP;
+  App::Raider::Hall::MCP->new(hall => $self);
+}
+
 has protocol => (
   is => 'ro',
   lazy => 1,
@@ -132,6 +168,8 @@ sub run {
   $self->_load_singleton_queues;
   $self->_setup_signal_handlers;
   $self->protocol;
+  $self->_setup_cron;
+  $self->_setup_telegram;
 
   $self->_emit('hall.started', { root => $self->root->stringify });
 
@@ -177,6 +215,18 @@ sub _setup_mcp_socket {
 sub _setup_event_broadcaster {
   my ($self) = @_;
   $self->{_subscribers} = [];
+}
+
+sub _setup_cron {
+  my ($self) = @_;
+  return unless $self->config->{cron} && @{$self->config->{cron}};
+  $self->cron_scheduler->start;
+}
+
+sub _setup_telegram {
+  my ($self) = @_;
+  return unless $self->config->{telegram} && $self->config->{telegram}{bots};
+  $self->telegram->setup_bots;
 }
 
 sub _handle_client {
@@ -535,6 +585,10 @@ sub shutdown {
   my ($self) = @_;
   $self->_emit('hall.stopping', {});
 
+  if ($self->telegram) {
+    eval { $self->telegram->stop };
+  }
+
   for my $r (values %{$self->raiders}) {
     kill 'TERM', $r->pid if $r->pid && $r->pid > 0;
   }
@@ -584,6 +638,400 @@ has slot_name => (is => 'ro', isa => 'Str', required => 1);
 has base_name => (is => 'ro', isa => 'Str', required => 1);
 has log_path => (is => 'ro', isa => 'Path::Tiny', required => 1);
 has mission => (is => 'ro', isa => 'Str', required => 1);
+
+__PACKAGE__->meta->make_immutable;
+
+1;
+
+package App::Raider::Hall::Cron;
+our $VERSION = '0.004';
+
+use Moose;
+use namespace::autoclean;
+use Schedule::Cron;
+use JSON::MaybeXS;
+
+has hall => (
+  is => 'ro',
+  isa => 'App::Raider::Hall',
+  required => 1,
+  weak_ref => 1,
+);
+
+has schedule => (
+  is => 'ro',
+  lazy => 1,
+  builder => '_build_schedule',
+);
+
+has _jobs => (
+  is => 'ro',
+  default => sub { {} },
+);
+
+sub _build_schedule {
+  my ($self) = @_;
+  Schedule::Cron->new(
+    sub {
+      my (@args) = @_;
+      $self->_run_scheduled(@args);
+    },
+    nofork => 1,
+  );
+}
+
+sub _run_scheduled {
+  my ($self, @args) = @_;
+  my $entry = $args[0] // return;
+  my $name = $entry->{name} // return;
+  my $mission = $entry->{mission} // '';
+  my $coalesce = $entry->{coalesce} // 0;
+
+  $self->hall->spawn(name => $name, mission => $mission);
+}
+
+sub add_job {
+  my ($self, %args) = @_;
+  my $id = $args{id} // time;
+  my $cron_expr = $args{cron} // die "need cron expr";
+  my $name = $args{name} // die "need name";
+  my $mission = $args{mission} // '';
+  my $coalesce = $args{coalesce} // 0;
+
+  $self->schedule->add_entry(
+    $cron_expr,
+    $id,
+    { name => $name, mission => $mission, coalesce => $coalesce },
+  );
+  $self->_jobs->{$id} = {
+    cron => $cron_expr,
+    name => $name,
+    mission => $mission,
+    coalesce => $coalesce,
+  };
+}
+
+sub start {
+  my ($self) = @_;
+  my $conf = $self->hall->config;
+  my $cron_list = $conf->{cron} // [];
+  for my $entry (@$cron_list) {
+    $self->add_job(
+      id => $entry->{id} // $entry->{name},
+      cron => $entry->{cron},
+      name => $entry->{name},
+      mission => $entry->{mission} // '',
+      coalesce => $entry->{coalesce} // 0,
+    );
+  }
+  $self->schedule->run;
+}
+
+sub cancel_job {
+  my ($self, $id) = @_;
+  delete $self->_jobs->{$id};
+}
+
+__PACKAGE__->meta->make_immutable;
+
+1;
+
+# ===== Hall::Telegram — Multi-bot Telegram long-poll =====
+
+package App::Raider::Hall::Telegram;
+our $VERSION = '0.004';
+
+use Moose;
+use namespace::autoclean;
+use JSON::MaybeXS;
+
+has hall => (
+  is => 'ro',
+  isa => 'App::Raider::Hall',
+  required => 1,
+  weak_ref => 1,
+);
+
+has _workers => (
+  is => 'ro',
+  default => sub { {} },
+);
+
+has _history_dir => (
+  is => 'ro',
+  lazy => 1,
+  builder => '_build_history_dir',
+);
+
+sub _build_history_dir {
+  my ($self) = @_;
+  my $d = $self->hall->state_dir->child('telegram');
+  $d->mkpath unless -d $d;
+  $d;
+}
+
+sub setup_bots {
+  my ($self) = @_;
+  my $conf = $self->hall->config->{telegram} // {};
+  my $bots = $conf->{bots} // {};
+  for my $name (keys %$bots) {
+    $self->_start_bot($name, $bots->{$name});
+  }
+}
+
+sub _start_bot {
+  my ($self, $name, $bot_conf) = @_;
+  my $token = $bot_conf->{token} // return;
+  my $allowlist = $bot_conf->{allowlist} // [];
+  my $routing = $bot_conf->{routing} // {};
+
+  require Net::Async::HTTP;
+  my $ua = Net::Async::HTTP->new(
+    max_connections_per_host => 1,
+  );
+  $self->hall->loop->add($ua);
+
+  $self->_workers->{$name} = {
+    token => $token,
+    allowlist => $allowlist,
+    routing => $routing,
+    ua => $ua,
+    offset => 0,
+    active => 1,
+  };
+
+  $self->_poll($name);
+}
+
+sub _poll {
+  my ($self, $name) = @_;
+  my $worker = $self->_workers->{$name} or return;
+  return unless $worker->{active};
+
+  my $ua = $worker->{ua};
+  my $token = $worker->{token};
+
+  my $url = "https://api.telegram.org/bot$token/getUpdates";
+  my $params = { timeout => 30 };
+  $params->{offset} = $worker->{offset} if $worker->{offset};
+
+  my $f = $ua->GET_form($url, $params);
+  $f->on_done(sub {
+    my ($body) = @_;
+    my $updates = eval { JSON::MaybeXS->new->decode($body)->{result} // [] };
+    for my $update (@$updates) {
+      $self->_handle_update($name, $update);
+      $worker->{offset} = $update->{update_id} + 1;
+    }
+    $self->hall->loop->later(sub { $self->_poll($name) });
+  });
+  $f->on_fail(sub {
+    my ($err) = @_;
+    $self->hall->loop->later(sub { $self->_poll($name) });
+  });
+}
+
+sub _handle_update {
+  my ($self, $bot_name, $update) = @_;
+  my $worker = $self->_workers->{$bot_name} or return;
+  my $msg = $update->{message} // $update->{edited_message} // return;
+
+  my $chat_id = $msg->{chat}{id} // return;
+  my $text = $msg->{text} // '';
+
+  my $allowlist = $worker->{allowlist};
+  if (@$allowlist && !grep { $_ eq $chat_id } @$allowlist) {
+    return;
+  }
+
+  my $routing = $worker->{routing};
+  my $target_raider = $routing->{$chat_id} // $routing->{'*'} // undef;
+
+  $self->hall->_emit('telegram.in', {
+    bot => $bot_name,
+    chat_id => $chat_id,
+    text => $text,
+    first_name => $msg->{chat}{first_name} // '',
+    username => $msg->{chat}{username} // '',
+    update_id => $update->{update_id},
+  });
+
+  $self->_save_history($bot_name, $chat_id, $update);
+
+  if ($target_raider) {
+    $self->hall->spawn(
+      name => $target_raider,
+      mission => $text,
+    );
+  }
+}
+
+sub _save_history {
+  my ($self, $bot_name, $chat_id, $update) = @_;
+  my $dir = $self->_history_dir->child($bot_name);
+  $dir->mkpath unless -d $dir;
+  my $file = $dir->child("$chat_id.json");
+  my $history = eval { JSON::MaybeXS->new->decode($file->slurp_utf8) } // [];
+  push @$history, $update;
+  $file->spew_utf8(JSON::MaybeXS->new->encode($history));
+}
+
+sub send_message {
+  my ($self, %args) = @_;
+  my $bot_name = $args{bot} // return { error => 'bot name required' };
+  my $chat_id = $args{chat_id} // return { error => 'chat_id required' };
+  my $text = $args{text} // return { error => 'text required' };
+
+  my $worker = $self->_workers->{$bot_name} or return { error => "bot $bot_name not running" };
+  my $token = $worker->{token};
+  my $ua = $worker->{ua};
+
+  my $url = "https://api.telegram.org/bot$token/sendMessage";
+  my $f = $ua->POST_form($url, {
+    chat_id => $chat_id,
+    text => $text,
+    parse_mode => 'Markdown',
+  });
+
+  my $result;
+  $f->on_done(sub { $result = { ok => 1 }; });
+  $f->on_fail(sub { $result = { error => $_[0] }; });
+  return $result // { error => 'no response' };
+}
+
+sub stop {
+  my ($self) = @_;
+  $_->{active} = 0 for values %{$self->_workers};
+}
+
+__PACKAGE__->meta->make_immutable;
+
+1;
+
+package App::Raider::Hall::MCP;
+our $VERSION = '0.004';
+
+use Moose;
+use namespace::autoclean;
+use JSON::MaybeXS;
+
+has hall => (
+  is => 'ro',
+  isa => 'App::Raider::Hall',
+  required => 1,
+  weak_ref => 1,
+);
+
+has socket_path => (
+  is => 'ro',
+  lazy => 1,
+  builder => '_build_socket_path',
+);
+
+sub _build_socket_path {
+  my ($self) = @_;
+  $self->hall->root->child('.raider-hall.mcp')->stringify;
+}
+
+sub tools {
+  my ($self) = @_;
+  return {
+    spawn_raider => {
+      description => 'Spawn a raider in the hall',
+      input => {
+        type => 'object',
+        properties => {
+          name => { type => 'string' },
+          mission => { type => 'string' },
+        },
+        required => [qw(name mission)],
+      },
+    },
+    list_raiders => {
+      description => 'List running raiders in the hall',
+      input => { type => 'object', properties => {} },
+    },
+    schedule_raid => {
+      description => 'Schedule a cron raid',
+      input => {
+        type => 'object',
+        properties => {
+          name => { type => 'string' },
+          cron => { type => 'string' },
+          mission => { type => 'string' },
+          coalesce => { type => 'boolean' },
+        },
+        required => [qw(name cron mission)],
+      },
+    },
+    cancel_job => {
+      description => 'Cancel a scheduled job',
+      input => {
+        type => 'object',
+        properties => { id => { type => 'string' } },
+        required => [qw(id)],
+      },
+    },
+    send_telegram => {
+      description => 'Send a Telegram message',
+      input => {
+        type => 'object',
+        properties => {
+          bot => { type => 'string' },
+          chat_id => { type => 'integer' },
+          text => { type => 'string' },
+        },
+        required => [qw(bot chat_id text)],
+      },
+    },
+    hall_status => {
+      description => 'Get hall status',
+      input => { type => 'object', properties => {} },
+    },
+  };
+}
+
+sub handle_tool_call {
+  my ($self, $tool, $input) = @_;
+  my $hall = $self->hall;
+
+  if ($tool eq 'spawn_raider') {
+    return $hall->spawn(name => $input->{name}, mission => $input->{mission});
+  }
+  if ($tool eq 'list_raiders') {
+    return { raiders => [$hall->ps] };
+  }
+  if ($tool eq 'schedule_raid') {
+    $hall->cron_scheduler->add_job(
+      id => $input->{name},
+      cron => $input->{cron},
+      name => $input->{name},
+      mission => $input->{mission},
+      coalesce => $input->{coalesce} // 0,
+    ) if $hall->can('cron_scheduler');
+    return { scheduled => 1, name => $input->{name} };
+  }
+  if ($tool eq 'cancel_job') {
+    $hall->cron_scheduler->cancel_job($input->{id}) if $hall->can('cron_scheduler');
+    return { cancelled => 1, id => $input->{id} };
+  }
+  if ($tool eq 'send_telegram') {
+    return $hall->telegram->send_message(
+      bot => $input->{bot},
+      chat_id => $input->{chat_id},
+      text => $input->{text},
+    ) if $hall->can('telegram');
+    return { error => 'telegram not configured' };
+  }
+  if ($tool eq 'hall_status') {
+    return {
+      running => scalar(keys %{$hall->raiders}),
+      root => $hall->root->stringify,
+      slots => [sort keys %{$hall->raiders}],
+    };
+  }
+  return { error => "unknown tool: $tool" };
+}
 
 __PACKAGE__->meta->make_immutable;
 
@@ -649,427 +1097,6 @@ sub setup_handlers {
       root => $hall->root->stringify,
     }) . "\n");
   });
-}
-
-__PACKAGE__->meta->make_immutable;
-
-1;
-
-package App::Raider::Hall::CLI;
-our $VERSION = '0.004';
-# ABSTRACT: raider hall subcommand dispatcher
-
-use strict;
-use warnings;
-use Path::Tiny;
-use Getopt::Long qw( GetOptionsFromArray );
-use JSON::MaybeXS ();
-use IO::Async::Loop;
-use POSIX qw(WNOHANG);
-
-my @subcommands = qw( init start stop status ps spawn attach logs kill );
-
-sub main {
-  my ($class, @args) = @_;
-
-  if (!@args || $args[0] eq '--help' || $args[0] eq '-h') {
-    print usage();
-    exit 0;
-  }
-
-  my $cmd = shift @args;
-
-  if ($cmd eq 'init')    { shift @args; return run_init(@args); }
-  if ($cmd eq 'start')   { shift @args; return run_start(@args); }
-  if ($cmd eq 'stop')    { shift @args; return run_stop(@args); }
-  if ($cmd eq 'status')  { shift @args; return run_status(@args); }
-  if ($cmd eq 'ps')      { shift @args; return run_ps(@args); }
-  if ($cmd eq 'spawn')   { shift @args; return run_spawn(@args); }
-  if ($cmd eq 'attach')  { shift @args; return run_attach(@args); }
-  if ($cmd eq 'logs')    { shift @args; return run_logs(@args); }
-  if ($cmd eq 'kill')    { shift @args; return run_kill(@args); }
-  if ($cmd eq 'help')    { print usage(); exit 0; }
-
-  die "Unknown subcommand: $cmd\n\n" . usage();
-}
-
-sub cwd {
-  path('.')->absolute->stringify;
-}
-
-sub hall_dir {
-  my (@args) = @_;
-  return cwd unless @args && $args[0] !~ /^-/;
-  my $d = shift @args;
-  return path($d // '.')->absolute->stringify;
-}
-
-sub usage {
-  return <<"EOF";
-Usage: raider hall <subcommand> [options]
-
-Subcommands:
-  init              Bootstrap a new hall in the current directory
-  start [DIR]       Start the hall daemon (default: cwd)
-  stop [DIR]        Stop the hall daemon
-  status [DIR]      Show hall status
-  ps [DIR]          List running raiders
-  spawn [DIR] NAME MISSION  Spawn a raider
-  attach [DIR] ID   Attach to a raider's event stream
-  logs [DIR] ID     Fetch raider logs
-  kill [DIR] ID     Terminate a raider
-  help              Show this help
-
-Run 'raider hall <subcommand> --help' for per-command options.
-EOF
-}
-
-sub run_init {
-  my (@args) = @_;
-  my %opt;
-  GetOptionsFromArray(\@_, \%opt, 'name=s', 'engine=s', 'persona=s', 'help');
-  return print_init_help() if $opt{help};
-
-  my $name = $opt{name};
-  if (!$name) {
-    print "Raider name (e.g. Bjorn, Ragnar, Astrid, Ivar, Lagertha): ";
-    $name = <STDIN>;
-    chomp $name;
-    exit 1 unless length $name;
-  }
-
-  my $engine = $opt{engine} // 'anthropic';
-  my $persona = $opt{persona} // 'caveman';
-  my $dir = cwd;
-
-  my %yml;
-  $yml{longhouse} = 0;
-  $yml{preferred_lib_target} = '.raider-hall/lib';
-  $yml{raiders}{$name} = {
-    engine => $engine,
-    persona => $persona,
-    packs => [],
-    mcp => [],
-    isolated => 0,
-  };
-
-  require YAML::PP;
-  my $cfg_file = path($dir)->child('.raider-hall.yml');
-  if (-f $cfg_file) {
-    die "Refusing to overwrite existing $cfg_file\n";
-  }
-  $cfg_file->spew_utf8(YAML::PP->new->dump(\%yml));
-
-  print "Hall initialised in $dir with raider '$name'.\n";
-  print "Start with: raider hall start\n";
-  return 0;
-}
-
-sub print_init_help {
-  print <<"EOF";
-raider hall init [--name NAME] [--engine ENGINE] [--persona PERSONA]
-
-Bootstrap a new hall directory with a starter .raider-hall.yml.
-Prompts interactively if --name not provided.
-EOF
-  exit 0;
-}
-
-sub run_start {
-  my (@args) = @_;
-  my %opt;
-  GetOptionsFromArray(\@_, \%opt, 'daemon', 'help');
-  return print_start_help() if $opt{help};
-
-  my $dir = hall_dir(@args);
-  $dir = path($dir);
-
-  my $pidfile = $dir->child('.raider-hall.pid');
-  if (-f $pidfile) {
-    my $pid = eval { $pidfile->slurp_utf8 };
-    if ($pid && $pid =~ /^\d+$/ && kill(0, $pid)) {
-      die "Hall already running with PID $pid\n";
-    }
-  }
-
-  require App::Raider::Hall;
-  my $hall = App::Raider::Hall->new(root => $dir);
-
-  if ($opt{daemon}) {
-    my $pid = fork;
-    die "fork failed: $!" unless defined $pid;
-    if ($pid != 0) {
-      print "Hall started with PID $pid\n";
-      exit 0;
-    }
-    eval {
-      POSIX::setsid() or die "setsid: $!";
-      open STDIN, '<', '/dev/null';
-      open STDOUT, '>', '/dev/null';
-      open STDERR, '>', '/dev/null';
-    };
-    $hall->_write_pidfile;
-  }
-
-  eval { $hall->run };
-  if ($@) {
-    die "Hall error: $@\n";
-  }
-  return 0;
-}
-
-sub print_start_help {
-  print <<"EOF";
-raider hall start [DIR] [--daemon]
-
-Start the hall daemon in DIR (default: cwd).
---daemon   Fork to background
-EOF
-  exit 0;
-}
-
-sub run_stop {
-  my (@args) = @_;
-  my $dir = hall_dir(@args);
-  $dir = path($dir);
-
-  my $pidfile = $dir->child('.raider-hall.pid');
-  if (!-f $pidfile) {
-    die "No PID file found. Is the hall running?\n";
-  }
-  my $pid = eval { $pidfile->slurp_utf8 };
-  if (!$pid || $pid !~ /^\d+$/) {
-    die "Invalid PID file\n";
-  }
-  kill 'TERM', $pid or die "Failed to send TERM to $pid: $!\n";
-  print "Sent TERM to hall PID $pid\n";
-  return 0;
-}
-
-sub run_status {
-  my (@args) = @_;
-  my $dir = hall_dir(@args);
-  my $socket = path($dir)->child('.raider-hall.socket');
-  die "Hall not running (no socket found)\n" unless -e $socket;
-
-  my $result = _send_command($socket, { type => 'command', payload => { cmd => 'status' } });
-  print JSON::MaybeXS->new(pretty => 1)->encode($result), "\n";
-  return 0;
-}
-
-sub run_ps {
-  my (@args) = @_;
-  my $dir = hall_dir(@args);
-  my $socket = path($dir)->child('.raider-hall.socket');
-  die "Hall not running (no socket found)\n" unless -e $socket;
-
-  my $result = _send_command($socket, { type => 'command', payload => { cmd => 'ps' } });
-  my $list = $result->{raiders} // [];
-  if (!@$list) {
-    print "No running raiders.\n";
-    return 0;
-  }
-  printf "%-10s %-8s %s\n", 'SLOT', 'PID', 'BASE_NAME';
-  for my $r (@$list) {
-    printf "%-10s %-8s %s\n", $r->{slot}, $r->{pid}, $r->{base_name};
-  }
-  return 0;
-}
-
-sub _send_command {
-  my ($socket_path, $msg) = @_;
-
-  my $loop = IO::Async::Loop->new;
-
-  my $result;
-  my $connected;
-  my $done;
-
-  my $connector = $loop->connect(
-    path => "$socket_path",
-    on_connected => sub {
-      my ($sock) = @_;
-      $connected = 1;
-      my $json = JSON::MaybeXS->new->encode($msg);
-      $sock->write("$json\n");
-    },
-    on_read => sub {
-      my ($sock, $bufref) = @_;
-      if ($$bufref =~ s/^(.*?)\n//) {
-        $result = JSON::MaybeXS->new->decode($1);
-        $done = 1;
-        $loop->stop;
-      }
-    },
-    on_close => sub {
-      $loop->stop if $connected && !$done;
-    },
-    on_error => sub {
-      my ($err) = @_;
-      die "Connection error: $err\n";
-    },
-  );
-
-  $loop->add($connector);
-  $loop->run;
-
-  die "No response from hall\n" unless $result;
-  return $result;
-}
-
-sub run_spawn {
-  my (@args) = @_;
-  my %opt;
-  GetOptionsFromArray(\@_, \%opt, 'attach', 'help');
-  return print_spawn_help() if $opt{help};
-
-  my $dir = hall_dir(@args);
-  die "Usage: raider hall spawn NAME MISSION [--attach]\n" unless @args >= 2;
-
-  my $name = shift @args;
-  my $mission = join ' ', @args;
-
-  my $socket = path($dir)->child('.raider-hall.socket');
-  die "Hall not running (no socket found)\n" unless -e $socket;
-
-  my $result = _send_command($socket, {
-    type => 'command',
-    payload => {
-      cmd => 'spawn',
-      name => $name,
-      mission => $mission,
-      attach => $opt{attach} ? 1 : 0,
-    },
-  });
-
-  if ($result->{queued}) {
-    print "Mission queued for slot $result->{slot} (queue depth: $result->{queue_depth}).\n";
-  }
-  elsif ($result->{id}) {
-    print "Spawned raider $result->{id} (PID $result->{pid}) in slot $result->{slot}.\n";
-  }
-  elsif ($result->{error}) {
-    my $e = JSON::MaybeXS->new->decode($result->{error});
-    die "Hall error: $e->{error}\n";
-  }
-  return 0;
-}
-
-sub print_spawn_help {
-  print <<"EOF";
-raider hall spawn [DIR] NAME MISSION [--attach]
-
-Spawn a raider with the given NAME and MISSION in DIR (default: cwd).
-EOF
-  exit 0;
-}
-
-sub run_attach {
-  my (@args) = @_;
-  my %opt;
-  GetOptionsFromArray(\@_, \%opt, 'help');
-  return print_attach_help() if $opt{help};
-
-  my $dir = hall_dir(@args);
-  die "Usage: raider hall attach ID\n" unless @args;
-
-  my $id = shift @args;
-  my $socket = path($dir)->child('.raider-hall.socket');
-  die "Hall not running (no socket found)\n" unless -e $socket;
-
-  my $result = _send_command($socket, {
-    type => 'command',
-    payload => { cmd => 'attach', id => $id },
-  });
-
-  if ($result->{error}) {
-    die "Hall: $result->{error}\n";
-  }
-
-  print "Raider $id:\n";
-  print "  slot:   $result->{slot}\n";
-  print "  PID:    $result->{pid}\n";
-  print "  log:    $result->{log_path}\n";
-  return 0;
-}
-
-sub print_attach_help {
-  print <<"EOF";
-raider hall attach [DIR] ID
-
-Attach to a raider's event stream.
-EOF
-  exit 0;
-}
-
-sub run_logs {
-  my (@args) = @_;
-  my %opt;
-  GetOptionsFromArray(\@_, \%opt, 'follow', 'help');
-  return print_logs_help() if $opt{help};
-
-  my $dir = hall_dir(@args);
-  die "Usage: raider hall logs ID [--follow]\n" unless @args;
-
-  my $id = shift @args;
-  my $socket = path($dir)->child('.raider-hall.socket');
-  die "Hall not running (no socket found)\n" unless -e $socket;
-
-  my $result = _send_command($socket, {
-    type => 'command',
-    payload => { cmd => 'logs', id => $id },
-  });
-
-  if ($result->{error}) {
-    die "Hall: $result->{error}\n";
-  }
-  print $result->{log};
-  return 0;
-}
-
-sub print_logs_help {
-  print <<"EOF";
-raider hall logs [DIR] ID [--follow]
-
-Fetch logs for a raider. --follow not yet implemented.
-EOF
-  exit 0;
-}
-
-sub run_kill {
-  my (@args) = @_;
-  my %opt;
-  GetOptionsFromArray(\@_, \%opt, 'help');
-  return print_kill_help() if $opt{help};
-
-  my $dir = hall_dir(@args);
-  die "Usage: raider hall kill ID\n" unless @args;
-
-  my $id = shift @args;
-  my $socket = path($dir)->child('.raider-hall.socket');
-  die "Hall not running (no socket found)\n" unless -e $socket;
-
-  my $result = _send_command($socket, {
-    type => 'command',
-    payload => { cmd => 'kill', id => $id },
-  });
-
-  if ($result->{killed}) {
-    print "Killed raider $id.\n";
-  }
-  elsif ($result->{error}) {
-    die "Hall: $result->{error}\n";
-  }
-  return 0;
-}
-
-sub print_kill_help {
-  print <<"EOF";
-raider hall kill [DIR] ID
-
-Terminate a raider.
-EOF
-  exit 0;
 }
 
 1;

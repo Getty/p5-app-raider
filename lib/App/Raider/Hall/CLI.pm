@@ -29,6 +29,7 @@ sub main {
   if ($cmd eq 'attach')  { return run_attach(@args); }
   if ($cmd eq 'logs')    { return run_logs(@args); }
   if ($cmd eq 'kill')    { return run_kill(@args); }
+  if ($cmd eq 'install') { return run_install(@args); }
   if ($cmd eq 'help')    { print usage(); exit 0; }
 
   die "Unknown subcommand: $cmd\n\n" . usage();
@@ -59,6 +60,7 @@ Subcommands:
   attach [DIR] ID   Attach to a raider's event stream
   logs [DIR] ID     Fetch raider logs
   kill [DIR] ID     Terminate a raider
+  install [DIR]     Install systemd user unit
   help              Show this help
 
 Run 'raider hall <subcommand> --help' for per-command options.
@@ -415,6 +417,53 @@ sub print_kill_help {
 raider hall kill [DIR] ID
 
 Terminate a raider.
+EOF
+  exit 0;
+}
+
+sub run_install {
+  my (@args) = @_;
+  my $dir = hall_dir(@args);
+  $dir = path($dir);
+
+  my $unit_name = 'raider-hall';
+  my $xdg = $ENV{XDG_CONFIG_HOME} // path($ENV{HOME})->child('.config');
+  my $systemd_dir = $xdg->child('systemd', 'user');
+
+  $systemd_dir->mkpath unless -d $systemd_dir;
+
+  my $unit_file = $systemd_dir->child("$unit_name.service");
+  my $raider_bin = path($0)->absolute->stringify;
+  my $cwd = $dir->stringify;
+
+  my $unit_content = <<"EOF";
+[Unit]
+Description=Raider Hall daemon
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$cwd
+ExecStart=$raider_bin hall start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+  $unit_file->spew_utf8($unit_content);
+
+  print "Installed $unit_file\n";
+  print "Run: systemctl --user start $unit_name\n";
+  return 0;
+}
+
+sub print_install_help {
+  print <<"EOF";
+raider hall install [DIR]
+
+Install systemd user unit for the hall in DIR (default: cwd).
 EOF
   exit 0;
 }

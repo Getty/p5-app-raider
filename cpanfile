@@ -19,6 +19,7 @@ requires 'MCP::Run::Bash';
 requires 'Net::Async::WebSearch';
 requires 'Net::Async::HTTP';
 requires 'HTML::TreeBuilder';
+requires 'Schedule::Cron';
 
 recommends 'Term::ReadLine::Gnu';
 recommends 'Term::Choose';

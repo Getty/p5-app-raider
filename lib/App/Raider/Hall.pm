@@ -2,6 +2,66 @@ package App::Raider::Hall;
 our $VERSION = '0.004';
 # ABSTRACT: Hall daemon — spawns and manages raider processes
 
+=head1 SYNOPSIS
+
+    use App::Raider::Hall;
+    my $hall = App::Raider::Hall->new(root => Path::Tiny::path('.'));
+    $hall->run;   # blocks on the IO::Async loop
+
+From the shell:
+
+    raider hall init --name bjorn
+    raider hall start --daemon --acp-port 38421
+    raider hall spawn bjorn "summarise today's git log"
+
+=head1 DESCRIPTION
+
+Hall is the multi-raider daemon. It owns a UNIX command/event socket,
+spawns named raiders as child processes, enforces C<1name> singleton
+slots with persistent FIFO queueing, and wires in optional Slice 4/5
+features:
+
+=over
+
+=item * Non-blocking L<Schedule::Cron> scheduler for timed raids.
+
+=item * Multi-bot Telegram long-poll with routing + per-chat history.
+
+=item * MCP tool catalog on C<.raider-hall.mcp>.
+
+=item * ACP (Agent Client Protocol) adapter on a TCP port for Zed and
+other ACP-capable clients — see L<App::Raider::Hall::ACP>.
+
+=back
+
+All state flows through the event bus (JSONL pub/sub). Clients
+subscribe with C<{type: subscribe, payload: {filter: 'raider.'}}> and
+commands are separate frames (C<{type: command, payload: {cmd: ...}}>).
+
+=head1 CONFIG FILE
+
+C<.raider-hall.yml> in the hall root:
+
+    longhouse: false
+    preferred_lib_target: .raider-hall/lib
+    raiders:
+      bjorn:   { engine: anthropic, persona: caveman }
+      lagertha:{ engine: openai,    persona: polite, packs: [git-guru] }
+    cron:
+      - { name: 1bjorn, cron: '*/15 * * * *', mission: 'ping CI' }
+    telegram:
+      bots:
+        ops: { token: '...', allowlist: [42], routing: { '*': lagertha } }
+    acp: { port: 38421, host: 127.0.0.1 }
+    mcp: { enable: 1 }
+
+=head1 SEE ALSO
+
+L<App::Raider>, L<App::Raider::Hall::ACP>, L<App::Raider::HallTools>,
+L<App::Raider::Hall::CLI>.
+
+=cut
+
 use strict;
 use warnings;
 use Path::Tiny;

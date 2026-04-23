@@ -36,6 +36,15 @@ essential loop: one terminal, one conversation, a small fixed toolbox, and
 - **Skill aware** — `--claude` / `--openai` load your project's `CLAUDE.md`,
   `AGENTS.md`, and `.claude/skills/*/SKILL.md` directly into the mission,
   remembered in `.raider.yml` after the first use.
+- **Packs** — toggleable persona + power bundles (`caveman`, `polite`,
+  `teacher`, `git-guru`, `testing-fu`, `perl-hacker`). Drop your own
+  under `share/packs/` or point `packs:` in `.raider.yml` at a directory.
+- **Perl-native** — `--perl` unlocks `perl_eval` / `perl_check` /
+  `perl_cpanm`, a private `local::lib` under `.raider/lib/`, and
+  auto-recovery on missing modules (the agent installs, retries, moves on).
+- **Raider Hall** — `raider-hall` is a lightweight daemon that spawns
+  other raiders on demand, on cron, on a Telegram message, or over the
+  Agent Client Protocol. See [Raider Hall](#raider-hall) below.
 
 ## Quick start
 
@@ -225,6 +234,218 @@ Values are auto-coerced: `0.2` → Float, `4096` → Int, `true`/`false` → 1/0
 | `/skill [PATH]`      | Export plain markdown how-to-use-raider doc         |
 | `/skill-claude [PATH]` | Export Claude Code SKILL.md with YAML frontmatter |
 | `/quit` `/exit` `:q` | Leave                                               |
+
+## Packs — persona and power bundles
+
+Packs are small, toggleable modifiers stacked on top of Langertha's
+default mission. Two flavors:
+
+- **persona** packs (exclusive group — one active at a time):
+  `caveman` *(default)*, `polite`, `teacher`.
+- **power** packs (stackable):
+  `git-guru`, `testing-fu`, `perl-hacker`.
+
+From the REPL:
+
+```
+raider> /packs                       # list all with state
+raider> /pack on git-guru            # enable a power pack
+raider> /polite                      # same as /pack on polite — swaps caveman off
+raider> /pack off teacher            # turn one off explicitly
+```
+
+Active packs persist to `.raider.yml`:
+
+```yaml
+packs:
+  - polite
+  - git-guru
+  - testing-fu
+```
+
+Drop your own under `share/packs/<name>/` with a `SKILL.md` plus an
+optional `pack.yml`:
+
+```yaml
+# share/packs/my-rules/pack.yml
+exclusive_group: persona     # or 'power' (default)
+mcp: [perl, web]             # extra MCPs to load with this pack
+engine_options:
+  temperature: 0.2
+```
+
+The `SKILL.md` body is appended to the mission when the pack is active.
+
+## Perl-native tools
+
+`--perl` (or `perl: true` in `.raider.yml`) adds three MCP tools the
+agent can use directly:
+
+| Tool                             | Notes                                              |
+|----------------------------------|----------------------------------------------------|
+| `perl_eval(code, [stdin])`       | Ephemeral interpreter; captures stdout/stderr/exit |
+| `perl_check(code)`               | `perl -c` — syntax check without executing         |
+| `perl_cpanm(module, [options])`  | Install into the raider's private `local::lib`     |
+
+All installs land in a lib the raider owns — `.raider/lib/` next to the
+working directory by default, or `.raider-hall/raiders/<name>/lib/` when
+running under a hall (or a shared `.raider-hall/longhouse/lib/` if
+`longhouse: true` in `.raider-hall.yml`). The raider process itself
+imports the lib at startup, so freshly-installed modules are visible to
+subsequent `perl_eval` calls without restart.
+
+`perl_eval` also auto-recovers from `Can't locate X/Y.pm in @INC`
+errors: it installs the missing module once, retries the eval, and
+returns `auto_installed: [...]` in the result so the model knows what
+happened. It never loops.
+
+```
+raider --perl
+raider> welche version von DBI hab ich?
+[perl_eval] use DBI; print $DBI::VERSION    →  1.644
+raider> installier JSON::XS und mach einen quick-smoketest
+[perl_cpanm JSON::XS]                        →  installed 4.03
+[perl_eval] use JSON::XS; ...                →  {"ok":1}
+```
+
+## Raider Hall
+
+`raider-hall` is a small daemon that spawns other raiders on demand.
+Built for things a single one-shot REPL can't do:
+
+- **Named raiders** — `bjorn`, `ragnar`, `lagertha` with their own
+  persona, engine, model, and pack set. Defined once in
+  `.raider-hall.yml`.
+- **`1name` singletons** — spawn as `1bjorn` to force at most one
+  instance of Björn at a time. Overlapping missions queue FIFO on his
+  slot (queue persists to disk across restarts).
+- **Cron** — `cron:` entries fire spawns on a schedule, non-blocking.
+  Opt-in `coalesce: true` drops a run if the previous one is still
+  going; default falls through to 1name queueing.
+- **Telegram** — multi-bot long-poll; each bot has its own allowlist,
+  routing map, and message history. `telegram_reply` lands as an MCP
+  tool in the spawned raider so the agent can answer back.
+- **MCP adapter** — exposes `spawn_raider`, `list_raiders`,
+  `schedule_raid`, `cancel_job`, `send_telegram`, `hall_status` as MCP
+  tools for other agents to drive the hall.
+- **ACP adapter** — ships an [Agent Client Protocol][acp] server over
+  TCP so Zed (and any other ACP-capable client) can treat a hall as a
+  remote agent. See [ACP](#agent-client-protocol-acp) below.
+
+### Quick start
+
+```bash
+mkdir my-village && cd my-village
+raider hall init --name bjorn --engine anthropic --persona caveman
+raider hall add-raider lagertha --engine openai --persona polite --pack git-guru
+raider hall start --daemon                      # foreground: omit --daemon
+raider hall ps
+raider hall spawn bjorn "summarise yesterday's git log"
+raider hall spawn 1lagertha "review the last PR diff"
+raider hall logs <id>
+raider hall kill <id>
+raider hall stop
+```
+
+### `.raider-hall.yml`
+
+```yaml
+longhouse: false                    # true: share one local::lib across raiders
+preferred_lib_target: .raider-hall/lib
+raiders:
+  bjorn:
+    engine: anthropic
+    persona: caveman
+    packs: [git-guru]
+    mcp: []
+  lagertha:
+    engine: openai
+    model: gpt-4o-mini
+    persona: polite
+    packs: [testing-fu, perl-hacker]
+
+cron:
+  - name: 1bjorn                    # singleton — queues if still running
+    cron: '*/15 * * * *'
+    mission: "check the CI dashboard, post a line in #eng-alerts if anything is red"
+  - name: lagertha
+    cron: '0 9 * * MON'
+    mission: "compile last week's release notes"
+    coalesce: true                  # drop this run if the previous is still going
+
+telegram:
+  bots:
+    ops:
+      token: '123456:ABC...'
+      allowlist: [42, 99]
+      routing:
+        42: bjorn                   # chat 42 maps to Björn
+        '*': lagertha               # everyone else lands on Lagertha
+
+acp:
+  port: 38421
+  host: 127.0.0.1
+
+mcp:
+  enable: true                      # exposes .raider-hall.mcp socket
+```
+
+### Agent Client Protocol (ACP)
+
+With `acp.port` set (or `--acp-port N` on `raider hall start`), the
+hall listens for ACP clients over TCP. Methods implemented in this
+release:
+
+| Method           | Maps to                                                     |
+|------------------|-------------------------------------------------------------|
+| `initialize`     | Returns protocol version + agent capabilities               |
+| `session/new`    | Creates an ACP session bound to a configured raider name    |
+| `session/prompt` | Spawns the raider with the user turn; streams back events   |
+| `session/cancel` | Sends `TERM` to the current raider                          |
+
+Events from the hall bus (`raider.*`) are forwarded to the client as
+`session/update` notifications. A richer mapping (tool_call →
+`tool_use` blocks, segmented `agent_message_chunk`s, `fs/*` push edits)
+is on the roadmap.
+
+Quick smoketest:
+
+```bash
+raider hall start --daemon --acp-port 38421
+
+# talk to it like any JSON-RPC server
+nc 127.0.0.1 38421 <<'EOF'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+EOF
+```
+
+### Hall events
+
+Every state change is emitted on the hall's event bus (JSONL over the
+unix socket). Subscribe with `{"type":"subscribe","payload":{"filter":"raider."}}`.
+
+| Event                   | When                                            |
+|-------------------------|-------------------------------------------------|
+| `hall.started`          | Daemon ready                                    |
+| `hall.stopping`         | Shutdown in progress                            |
+| `raider.spawned`        | New child started                               |
+| `raider.queued`         | 1name slot busy, mission queued                 |
+| `raider.done`           | Child exited                                    |
+| `raider.failed`         | Child crashed / signaled                        |
+| `cron.fired`            | Scheduled raid fired                            |
+| `cron.coalesced`        | Scheduled raid dropped (previous still running) |
+| `telegram.in`           | Incoming Telegram message                       |
+| `telegram.poll_error`   | Long-poll HTTP failure                          |
+| `acp.started`           | ACP listener bound                              |
+
+### systemd
+
+```bash
+raider hall install           # writes ~/.config/systemd/user/raider-hall.service
+systemctl --user start raider-hall
+```
+
+[acp]: https://agentclientprotocol.com/
 
 ## Context window and rate limits
 

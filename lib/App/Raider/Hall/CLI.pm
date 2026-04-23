@@ -496,18 +496,25 @@ sub run_install {
   $dir = path($dir);
   my $cwd = $dir->stringify;
   my $unit_name = $opt{name} // 'raider-hall';
-
-  # Detection: inside a container without --docker/--host is almost
-  # always a mistake (the unit would point at binary paths the host
-  # can't reach). Refuse unless one is set explicitly.
   my $in_container = -f '/.dockerenv' || ($ENV{container} // '') ne '';
+
+  # The hard truth: systemd lives on the host. Writing to
+  # ~/.config/systemd/user/ from inside a container puts the unit in
+  # the container's filesystem where no systemd will ever read it.
+  # So: inside a container, we *always* emit to stdout and tell the
+  # user where to put it. The choice of --docker vs --host only
+  # changes the template.
+  #
+  # Outside a container we write to ~/.config by default, unless
+  # --stdout is explicitly requested.
   if ($in_container && !$opt{docker} && !$opt{host}) {
     die "Detected container environment (/.dockerenv present).\n"
       . "Pick one:\n"
       . "  --docker        emit a unit that runs `docker run` on the host\n"
-      . "  --host          emit a unit that runs the in-container raider binary\n"
-      . "                  directly (you know what you're doing)\n"
-      . "  --stdout        print the unit to stdout instead of writing to ~/.config\n";
+      . "                  (install it on the HOST — systemd isn't in here)\n"
+      . "  --host          emit a native unit that execs the in-container raider\n"
+      . "                  (only makes sense if you also bind-mount\n"
+      . "                  ~/.config/systemd/user into the container)\n";
   }
 
   my $unit_content = $opt{docker}
@@ -519,6 +526,25 @@ sub run_install {
     return 0;
   }
 
+  # Inside a container: write to `$root/.raider-hall/systemd/…` — the
+  # working dir is almost always a bind-mount from the host, so the
+  # file shows up in the user's project tree and a single `ln -s` (or
+  # `cp`) from the host pulls it into ~/.config/systemd/user/.
+  if ($in_container) {
+    my $staging = $dir->child('.raider-hall', 'systemd');
+    $staging->mkpath unless -d $staging;
+    my $unit_file = $staging->child("$unit_name.service");
+    $unit_file->spew_utf8($unit_content);
+
+    print "Wrote $unit_file\n";
+    print "(inside a container — systemd lives on the host)\n\n";
+    print "On the HOST, run:\n\n";
+    print "  cp .raider-hall/systemd/$unit_name.service ~/.config/systemd/user/\n";
+    print "  systemctl --user daemon-reload\n";
+    print "  systemctl --user enable --now $unit_name\n";
+    return 0;
+  }
+
   my $xdg = $ENV{XDG_CONFIG_HOME} // path($ENV{HOME})->child('.config');
   my $systemd_dir = path($xdg)->child('systemd', 'user');
   $systemd_dir->mkpath unless -d $systemd_dir;
@@ -527,7 +553,7 @@ sub run_install {
 
   print "Installed $unit_file\n";
   if ($opt{docker}) {
-    print "(docker-mode unit — needs docker on the host)\n";
+    print "(docker-mode unit — docker must be available on this host)\n";
   }
   print "Run:\n";
   print "  systemctl --user daemon-reload\n";

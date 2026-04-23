@@ -464,33 +464,45 @@ systemctl --user daemon-reload
 systemctl --user enable --now raider-hall
 ```
 
-**Docker install** — raider only lives inside a container image. Run
-`install` from *outside* the container (on the host, with raider
-installed as a CPAN module) *or* from inside the container with
-`--docker` (the safety check forces you to choose):
+**Docker install** — raider only lives inside a container image.
+`systemd` lives on the *host*, so the unit file has to land in the
+host's `~/.config/systemd/user/`. Two ways:
+
+*(a) From the host, if raider is installed on the host too:*
 
 ```bash
-# On the host:
 raider hall install --docker \
     --image raudssus/raider:latest \
-    --acp-port 38421                       # published out of the container
+    --acp-port 38421
+systemctl --user daemon-reload
+systemctl --user enable --now raider-hall
 ```
+
+*(b) From inside the container* — raider uses the bind-mounted working
+directory as the drop-off point, so the unit appears in your project
+tree and you just copy it:
+
+```bash
+# inside the container:
+raider hall install --docker \
+    --image raudssus/raider:latest \
+    --acp-port 38421
+# → writes .raider-hall/systemd/raider-hall.service
+
+# on the host:
+cp .raider-hall/systemd/raider-hall.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now raider-hall
+```
+
+`--stdout` on its own skips writing entirely and just prints the unit
+to stdout.
 
 The generated unit runs `docker run --rm --name raider-hall -v
 $PWD:/work …`, forwards every known `*_API_KEY` env var, and
-publishes the ACP port with `-p`. When `--acp-port` is set, the unit
-also passes `--acp-host 0.0.0.0` to the in-container raider so the
+publishes the ACP port with `-p`. With `--acp-port` set, it also
+passes `--acp-host 0.0.0.0` to the in-container raider so the
 listener is reachable outside the container.
-
-If you want to see the unit without writing it:
-
-```bash
-raider hall install --docker --acp-port 38421 --stdout
-```
-
-Running `raider hall install` inside a container *without* `--docker`
-or `--host` is refused — the resulting unit would reference
-container-internal paths the host can't reach.
 
 [acp]: https://agentclientprotocol.com/
 

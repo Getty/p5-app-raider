@@ -60,6 +60,10 @@ local/
 # Per-project raider config — opt-in per repo; not shipped in the dist
 .raider.md
 .raider.yml
+# Examples intentionally ship sample configs
+!examples/**/.raider.md
+!examples/**/.raider.yml
+!examples/**/.raider-hall.yml
 
 # Auto-generated skill docs (regenerate via /skill or --export-skill)
 RAIDER-SKILL.md

@@ -622,6 +622,18 @@ sub _build_mcps {
     push @clients, $client;
   }
 
+  # Hall-side tools: when we were spawned by raider-hall, expose
+  # telegram_reply / hall_status / hall_spawn so the agent can talk back.
+  if ($ENV{RAIDER_HALL_SOCKET} && -S $ENV{RAIDER_HALL_SOCKET}) {
+    require App::Raider::HallTools;
+    my $hall_srv = App::Raider::HallTools::build_hall_tools_server(
+      socket => $ENV{RAIDER_HALL_SOCKET},
+    );
+    my $client = Net::Async::MCP->new(server => $hall_srv);
+    $self->loop->add($client);
+    push @clients, $client;
+  }
+
   return \@clients;
 }
 

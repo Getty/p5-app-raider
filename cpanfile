@@ -20,6 +20,8 @@ requires 'Net::Async::WebSearch';
 requires 'Net::Async::HTTP';
 requires 'HTML::TreeBuilder';
 requires 'Schedule::Cron';
+requires 'File::Which';
+requires 'URI';
 
 recommends 'Term::ReadLine::Gnu';
 recommends 'Term::Choose';

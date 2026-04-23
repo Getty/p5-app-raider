@@ -140,6 +140,23 @@ sub _build_mcp_adapter {
   App::Raider::Hall::MCP->new(hall => $self);
 }
 
+has acp_adapter => (
+  is => 'ro',
+  lazy => 1,
+  builder => '_build_acp_adapter',
+);
+
+sub _build_acp_adapter {
+  my ($self) = @_;
+  require App::Raider::Hall::ACP;
+  my $conf = $self->config->{acp} // {};
+  App::Raider::Hall::ACP->new(
+    hall => $self,
+    port => ($ENV{RAIDER_HALL_ACP_PORT} // $conf->{port} // 0),
+    host => ($ENV{RAIDER_HALL_ACP_HOST} // $conf->{host} // '127.0.0.1'),
+  );
+}
+
 has protocol => (
   is => 'ro',
   lazy => 1,
@@ -170,6 +187,7 @@ sub run {
   $self->protocol;
   $self->_setup_cron;
   $self->_setup_telegram;
+  $self->_setup_acp;
 
   $self->_emit('hall.started', { root => $self->root->stringify });
 
@@ -189,7 +207,13 @@ sub _setup_socket {
 
   require IO::Async::Listener;
   require IO::Socket::UNIX;
-  require Unix::Listen::Fancy::Sockaddr;
+
+  my $sock = IO::Socket::UNIX->new(
+    Local => $path,
+    Listen => 1,
+  ) or die "Cannot create UNIX socket at $path: $!";
+
+  chmod 0600, $path or die "Cannot chmod 0600 $path: $!";
 
   my $listener = IO::Async::Listener->new(
     on_accept => sub {
@@ -198,13 +222,9 @@ sub _setup_socket {
     },
   );
 
-  $listener->listen(
-    path => $path,
-    max_pending => 10,
-  ) or die "Cannot listen on $path: $!";
-
-  chmod 0600, $path or die "Cannot chmod 0600 $path: $!";
   $loop->add($listener);
+
+  $listener->listen(handle => $sock);
   $self->{_listener} = $listener;
 }
 
@@ -229,6 +249,20 @@ sub _setup_telegram {
   $self->telegram->setup_bots;
 }
 
+sub _setup_acp {
+  my ($self) = @_;
+  my $enabled = $ENV{RAIDER_HALL_ACP_PORT}
+    || ($self->config->{acp} && $self->config->{acp}{port});
+  return unless $enabled;
+  $self->acp_adapter->start;
+}
+
+sub _acp_running {
+  my ($self) = @_;
+  return $ENV{RAIDER_HALL_ACP_PORT}
+    || ($self->config->{acp} && $self->config->{acp}{port});
+}
+
 sub _handle_client {
   my ($self, $sock) = @_;
   my $stream = IO::Async::Stream->new(
@@ -237,7 +271,7 @@ sub _handle_client {
       my ($stream, $bufref, $eof) = @_;
       $self->_process_client_frames($stream, $bufref, $eof);
     },
-    on_close => sub {
+    on_closed => sub {
       my ($stream) = @_;
       $self->_unsubscribe_stream($stream);
     },
@@ -355,20 +389,11 @@ sub _setup_signal_handlers {
   my ($self) = @_;
   my $loop = $self->loop;
 
-  $loop->sigchild(sub {
-    my ($loop, $pid, $status) = @_;
-    $self->_reap_raider($pid, $status);
-  });
+  # CHLD is handled per-process via IO::Async::Process->on_finish; no
+  # global watcher needed (and mixing would double-reap).
 
-  $loop->sigterm(sub {
-    my ($loop) = @_;
-    $self->shutdown;
-  });
-
-  $loop->sigint(sub {
-    my ($loop) = @_;
-    $self->shutdown;
-  });
+  $loop->watch_signal(TERM => sub { $self->shutdown });
+  $loop->watch_signal(INT  => sub { $self->shutdown });
 }
 
 sub _reap_raider {
@@ -458,14 +483,14 @@ sub _spawn_raider {
   my $mcp = $raider_config->{mcp} // [];
   my $isolated = $raider_config->{isolated} // 0;
 
-  my $raider_bin = path($0)->absolute->stringify;
+  my $raider_bin = $self->_raider_bin;
   my @cmd = ($^X, $raider_bin, '--json');
   push @cmd, '--engine', $engine if $engine;
   push @cmd, '--model', $model if $model;
   push @cmd, '--pack', $_ for @$packs;
   push @cmd, '--root', $self->root->stringify;
-  push @cmd, '--';
-  push @cmd, $mission;
+  # Mission is one single argv (bin/raider does join(' ', @ARGV)).
+  push @cmd, '--', $mission;
 
   my $log_dir = $self->root->child('.raider-hall', 'logs');
   $log_dir->mkpath unless -d $log_dir;
@@ -473,24 +498,30 @@ sub _spawn_raider {
   require IO::Async::Process;
   my $log_path = $log_dir->child("${slot}.log");
 
-  # Set up environment for child (local so doesn't affect parent)
-  local %ENV = %ENV;
-  $ENV{RAIDER_HALL_MODE} = '1';
-  $ENV{RAIDER_HALL_ROOT} = $self->root->stringify;
-  $ENV{RAIDER_HALL_SLOT} = $slot;
   my $lib_path = $self->_raider_lib_path($base_name);
-  $ENV{PERL5LIB} = join ':', grep { defined } ($ENV{PERL5LIB}, $lib_path,
+  my $extra_perl5lib = join ':', grep { defined && length } ($lib_path,
     ($self->config->{longhouse} ? $self->longhouse_lib_path->stringify : ()));
 
-  my @exec_cmd = ('/bin/sh', '-c',
-    "exec >>$log_path 2>&1 && exec $^X " . join(' ', map { quotemeta($_) } @cmd)
-  );
   my $process = IO::Async::Process->new(
-    command => \@exec_cmd,
+    command => \@cmd,
+    setup => [
+      stdin  => [ 'open', '<', '/dev/null' ],
+      stdout => [ 'open', '>>', "$log_path" ],
+      stderr => [ 'open', '>>', "$log_path" ],
+      env => {
+        %ENV,
+        RAIDER_HALL_MODE   => '1',
+        RAIDER_HALL_ROOT   => $self->root->stringify,
+        RAIDER_HALL_SLOT   => $slot,
+        RAIDER_HALL_SOCKET => $self->socket_path,
+        PERL5LIB => join(':', grep { defined && length }
+                          ($ENV{PERL5LIB}, $extra_perl5lib)),
+      },
+    ],
     on_finish => sub {
       my ($proc, $exitcode) = @_;
       my $pid = $proc->pid;
-      $self->loop->later(sub { $self->_reap_raider($pid, $exitcode << 8) });
+      $self->loop->later(sub { $self->_reap_raider($pid, $exitcode) });
     },
   );
 
@@ -515,6 +546,20 @@ sub _spawn_raider {
   });
 
   return { id => $id, pid => $process->pid, slot => $slot };
+}
+
+sub _raider_bin {
+  my ($self) = @_;
+  # Find the raider binary next to the currently-running script, or fall
+  # back to $PATH. Avoid recursing through $0 if we were invoked as
+  # `raider-hall` which lives alongside `raider`.
+  my $here = path($0)->absolute;
+  my $sibling = $here->parent->child('raider');
+  return $sibling->stringify if -x $sibling;
+  require File::Which;
+  my $which = File::Which::which('raider');
+  return $which if $which;
+  die "Cannot find 'raider' binary (looked next to $here and in \$PATH)";
 }
 
 sub _raider_lib_path {
@@ -585,6 +630,10 @@ sub shutdown {
   my ($self) = @_;
   $self->_emit('hall.stopping', {});
 
+  if ($self->_acp_running) {
+    eval { $self->acp_adapter->stop };
+  }
+
   if ($self->telegram) {
     eval { $self->telegram->stop };
   }
@@ -613,6 +662,7 @@ sub _write_pidfile {
 
 sub _remove_pidfile {
   my ($self) = @_;
+  return unless $self->root;
   my $pidfile = $self->root->child('.raider-hall.pid');
   $pidfile->remove if -f $pidfile;
 }
@@ -646,10 +696,16 @@ __PACKAGE__->meta->make_immutable;
 package App::Raider::Hall::Cron;
 our $VERSION = '0.004';
 
+# Non-blocking cron: for each entry we compute the next execution time via
+# Schedule::Cron and arm an IO::Async::Timer::Absolute. When it fires we
+# spawn the raider, then re-arm for the following occurrence. Overlap is
+# controlled per-entry: default is hall's 1name queue (opt-in coalesce
+# drops the run if the previous is still in-flight).
+
 use Moose;
 use namespace::autoclean;
 use Schedule::Cron;
-use JSON::MaybeXS;
+use IO::Async::Timer::Absolute;
 
 has hall => (
   is => 'ro',
@@ -658,57 +714,69 @@ has hall => (
   weak_ref => 1,
 );
 
-has schedule => (
-  is => 'ro',
-  lazy => 1,
-  builder => '_build_schedule',
-);
-
 has _jobs => (
   is => 'ro',
   default => sub { {} },
 );
 
-sub _build_schedule {
-  my ($self) = @_;
-  Schedule::Cron->new(
-    sub {
-      my (@args) = @_;
-      $self->_run_scheduled(@args);
-    },
-    nofork => 1,
-  );
-}
-
-sub _run_scheduled {
-  my ($self, @args) = @_;
-  my $entry = $args[0] // return;
-  my $name = $entry->{name} // return;
-  my $mission = $entry->{mission} // '';
-  my $coalesce = $entry->{coalesce} // 0;
-
-  $self->hall->spawn(name => $name, mission => $mission);
+# A single parsing helper — we only use Schedule::Cron to compute the next
+# time from the expression; we never call its own run loop.
+sub _next_time_for {
+  my ($self, $expr) = @_;
+  my $sc = Schedule::Cron->new(sub { }, nofork => 1);
+  my $idx = $sc->add_entry($expr, sub { });
+  return $sc->get_next_execution_time($expr);
 }
 
 sub add_job {
   my ($self, %args) = @_;
-  my $id = $args{id} // time;
+  my $id = $args{id} // die "need id";
   my $cron_expr = $args{cron} // die "need cron expr";
   my $name = $args{name} // die "need name";
   my $mission = $args{mission} // '';
   my $coalesce = $args{coalesce} // 0;
 
-  $self->schedule->add_entry(
-    $cron_expr,
-    $id,
-    { name => $name, mission => $mission, coalesce => $coalesce },
-  );
   $self->_jobs->{$id} = {
+    id => $id,
     cron => $cron_expr,
     name => $name,
     mission => $mission,
     coalesce => $coalesce,
+    running => 0,
   };
+  $self->_arm($id);
+  return $id;
+}
+
+sub _arm {
+  my ($self, $id) = @_;
+  my $job = $self->_jobs->{$id} or return;
+  my $when = eval { $self->_next_time_for($job->{cron}) };
+  return unless $when;
+
+  my $timer = IO::Async::Timer::Absolute->new(
+    time => $when,
+    on_expire => sub {
+      my $t = $self->_jobs->{$id};
+      return unless $t;  # cancelled
+      if ($t->{coalesce} && $t->{running}) {
+        $self->hall->_emit('cron.coalesced', { id => $id, name => $t->{name} });
+      } else {
+        $t->{running} = 1;
+        my $res = eval { $self->hall->spawn(name => $t->{name}, mission => $t->{mission}) };
+        $self->hall->_emit('cron.fired', {
+          id => $id, name => $t->{name},
+          ($res && $res->{id} ? (raider_id => $res->{id}) : ()),
+        });
+        # Clear running once the spawn returned a handle; 1name queueing
+        # owns overlap protection when coalesce is off.
+        $t->{running} = 0;
+      }
+      $self->_arm($id);  # re-schedule next occurrence
+    },
+  );
+  $job->{timer} = $timer;
+  $self->hall->loop->add($timer);
 }
 
 sub start {
@@ -724,12 +792,14 @@ sub start {
       coalesce => $entry->{coalesce} // 0,
     );
   }
-  $self->schedule->run;
 }
 
 sub cancel_job {
   my ($self, $id) = @_;
-  delete $self->_jobs->{$id};
+  my $job = delete $self->_jobs->{$id} or return;
+  if ($job->{timer}) {
+    eval { $self->hall->loop->remove($job->{timer}) };
+  }
 }
 
 __PACKAGE__->meta->make_immutable;
@@ -744,6 +814,9 @@ our $VERSION = '0.004';
 use Moose;
 use namespace::autoclean;
 use JSON::MaybeXS;
+use URI;
+use HTTP::Request::Common ();
+use IO::Async::Timer::Countdown;
 
 has hall => (
   is => 'ro',
@@ -788,6 +861,7 @@ sub _start_bot {
   require Net::Async::HTTP;
   my $ua = Net::Async::HTTP->new(
     max_connections_per_host => 1,
+    timeout => 60,
   );
   $self->hall->loop->add($ua);
 
@@ -811,14 +885,17 @@ sub _poll {
   my $ua = $worker->{ua};
   my $token = $worker->{token};
 
-  my $url = "https://api.telegram.org/bot$token/getUpdates";
-  my $params = { timeout => 30 };
-  $params->{offset} = $worker->{offset} if $worker->{offset};
+  my $uri = URI->new("https://api.telegram.org/bot$token/getUpdates");
+  my %q = (timeout => 30);
+  $q{offset} = $worker->{offset} if $worker->{offset};
+  $uri->query_form(%q);
 
-  my $f = $ua->GET_form($url, $params);
+  my $f = $ua->GET($uri);
   $f->on_done(sub {
-    my ($body) = @_;
-    my $updates = eval { JSON::MaybeXS->new->decode($body)->{result} // [] };
+    my ($resp) = @_;
+    my $updates = eval {
+      JSON::MaybeXS->new->decode($resp->decoded_content)->{result} // []
+    } // [];
     for my $update (@$updates) {
       $self->_handle_update($name, $update);
       $worker->{offset} = $update->{update_id} + 1;
@@ -826,8 +903,14 @@ sub _poll {
     $self->hall->loop->later(sub { $self->_poll($name) });
   });
   $f->on_fail(sub {
-    my ($err) = @_;
-    $self->hall->loop->later(sub { $self->_poll($name) });
+    $self->hall->_emit('telegram.poll_error', { bot => $name, error => "$_[0]" });
+    # Back off a bit on failure so we don't hot-loop against a dead network.
+    my $timer = IO::Async::Timer::Countdown->new(
+      delay => 5,
+      on_expire => sub { $self->_poll($name) },
+    );
+    $self->hall->loop->add($timer);
+    $timer->start;
   });
 }
 
@@ -886,17 +969,21 @@ sub send_message {
   my $token = $worker->{token};
   my $ua = $worker->{ua};
 
-  my $url = "https://api.telegram.org/bot$token/sendMessage";
-  my $f = $ua->POST_form($url, {
+  my $uri = URI->new("https://api.telegram.org/bot$token/sendMessage");
+  my $req = HTTP::Request::Common::POST($uri, [
     chat_id => $chat_id,
     text => $text,
     parse_mode => 'Markdown',
-  });
+  ]);
 
-  my $result;
-  $f->on_done(sub { $result = { ok => 1 }; });
-  $f->on_fail(sub { $result = { error => $_[0] }; });
-  return $result // { error => 'no response' };
+  # Fire-and-forget: return the Future so callers can await if they want.
+  my $f = $ua->do_request(request => $req);
+  $f->on_fail(sub {
+    $self->hall->_emit('telegram.send_error', {
+      bot => $bot_name, chat_id => $chat_id, error => "$_[0]",
+    });
+  });
+  return { ok => 1, future => $f };
 }
 
 sub stop {
@@ -1095,7 +1182,30 @@ sub setup_handlers {
     $stream->write(JSON::MaybeXS->new->encode({
       running => scalar(keys %{$hall->raiders}),
       root => $hall->root->stringify,
+      slots => [sort keys %{$hall->raiders}],
     }) . "\n");
+  });
+
+  $hall->_register_cmd(telegram_reply => sub {
+    my ($hall, $stream, $payload) = @_;
+    my $bot = $payload->{bot} // '';
+    my $chat_id = $payload->{chat_id};
+    my $text = $payload->{text} // '';
+    my $result;
+    if (!$bot || !defined $chat_id || !length $text) {
+      $result = { error => 'telegram_reply requires bot, chat_id, text' };
+    }
+    elsif (!$hall->config->{telegram} || !$hall->config->{telegram}{bots}) {
+      $result = { error => 'telegram not configured in .raider-hall.yml' };
+    }
+    else {
+      $result = $hall->telegram->send_message(
+        bot => $bot, chat_id => $chat_id, text => $text,
+      );
+      # Strip the Future before serialising.
+      delete $result->{future};
+    }
+    $stream->write(JSON::MaybeXS->new->encode($result) . "\n");
   });
 }
 

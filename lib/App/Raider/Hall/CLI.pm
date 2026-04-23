@@ -9,6 +9,7 @@ use Getopt::Long qw( GetOptions );
 use JSON::MaybeXS ();
 use IO::Async::Loop;
 use POSIX qw(WNOHANG);
+use Socket qw(SOCK_STREAM);
 
 sub main {
   my ($class, @args) = @_;
@@ -20,17 +21,18 @@ sub main {
 
   my $cmd = shift @args;
 
-  if ($cmd eq 'init')    { return run_init(@args); }
-  if ($cmd eq 'start')   { return run_start(@args); }
-  if ($cmd eq 'stop')    { return run_stop(@args); }
-  if ($cmd eq 'status')  { return run_status(@args); }
-  if ($cmd eq 'ps')      { return run_ps(@args); }
-  if ($cmd eq 'spawn')   { return run_spawn(@args); }
-  if ($cmd eq 'attach')  { return run_attach(@args); }
-  if ($cmd eq 'logs')    { return run_logs(@args); }
-  if ($cmd eq 'kill')    { return run_kill(@args); }
-  if ($cmd eq 'install') { return run_install(@args); }
-  if ($cmd eq 'help')    { print usage(); exit 0; }
+  if ($cmd eq 'init')       { return run_init(@args); }
+  if ($cmd eq 'add-raider') { return run_add_raider(@args); }
+  if ($cmd eq 'start')      { return run_start(@args); }
+  if ($cmd eq 'stop')       { return run_stop(@args); }
+  if ($cmd eq 'status')     { return run_status(@args); }
+  if ($cmd eq 'ps')         { return run_ps(@args); }
+  if ($cmd eq 'spawn')      { return run_spawn(@args); }
+  if ($cmd eq 'attach')     { return run_attach(@args); }
+  if ($cmd eq 'logs')       { return run_logs(@args); }
+  if ($cmd eq 'kill')       { return run_kill(@args); }
+  if ($cmd eq 'install')    { return run_install(@args); }
+  if ($cmd eq 'help')       { print usage(); exit 0; }
 
   die "Unknown subcommand: $cmd\n\n" . usage();
 }
@@ -42,7 +44,9 @@ sub cwd {
 sub hall_dir {
   my (@args) = @_;
   return cwd unless @args && $args[0] !~ /^-/;
-  my $d = shift @args;
+  my $d = $args[0];
+  return cwd unless -d $d;
+  shift @args;
   return path($d // '.')->absolute->stringify;
 }
 
@@ -51,17 +55,18 @@ sub usage {
 Usage: raider hall <subcommand> [options]
 
 Subcommands:
-  init              Bootstrap a new hall in the current directory
-  start [DIR]       Start the hall daemon (default: cwd)
-  stop [DIR]        Stop the hall daemon
-  status [DIR]      Show hall status
-  ps [DIR]          List running raiders
+  init               Bootstrap a new hall in the current directory
+  add-raider NAME    Append a raider entry to .raider-hall.yml
+  start [DIR]        Start the hall daemon (default: cwd)
+  stop [DIR]         Stop the hall daemon
+  status [DIR]       Show hall status
+  ps [DIR]           List running raiders
   spawn [DIR] NAME MISSION  Spawn a raider
-  attach [DIR] ID   Attach to a raider's event stream
-  logs [DIR] ID     Fetch raider logs
-  kill [DIR] ID     Terminate a raider
-  install [DIR]     Install systemd user unit
-  help              Show this help
+  attach [DIR] ID    Attach to a raider's event stream
+  logs [DIR] ID      Fetch raider logs
+  kill [DIR] ID      Terminate a raider
+  install [DIR]      Install systemd user unit
+  help               Show this help
 
 Run 'raider hall <subcommand> --help' for per-command options.
 EOF
@@ -109,6 +114,59 @@ sub run_init {
   return 0;
 }
 
+sub run_add_raider {
+  my @args = @_;
+  my %opt;
+  local @ARGV = @args;
+  Getopt::Long::GetOptions(\%opt,
+    'engine=s', 'persona=s', 'model=s', 'pack=s@', 'isolated', 'help');
+  return print_add_raider_help() if $opt{help};
+
+  my $name = shift @ARGV;
+  die "Usage: raider hall add-raider NAME [--engine E] [--persona P] [--model M] [--pack X]...\n"
+    unless $name;
+
+  my $dir = cwd;
+  require YAML::PP;
+  my $cfg_file = path($dir)->child('.raider-hall.yml');
+  die "No .raider-hall.yml found (run: raider hall init)\n" unless -f $cfg_file;
+
+  my $yml = YAML::PP->new->load_string($cfg_file->slurp_utf8) // {};
+  $yml->{raiders} //= {};
+  if ($yml->{raiders}{$name}) {
+    die "Raider '$name' already defined in $cfg_file\n";
+  }
+
+  $yml->{raiders}{$name} = {
+    engine   => $opt{engine}  // 'anthropic',
+    persona  => $opt{persona} // 'caveman',
+    ($opt{model} ? (model => $opt{model}) : ()),
+    packs    => $opt{pack} // [],
+    mcp      => [],
+    isolated => $opt{isolated} ? 1 : 0,
+  };
+
+  $cfg_file->spew_utf8(YAML::PP->new->dump_string($yml));
+  print "Added raider '$name' to $cfg_file.\n";
+  return 0;
+}
+
+sub print_add_raider_help {
+  print <<"EOF";
+raider hall add-raider NAME [options]
+
+Append a raider entry to .raider-hall.yml.
+
+Options:
+  --engine NAME      Engine (default: anthropic)
+  --persona NAME     Persona pack (default: caveman)
+  --model NAME       Model override
+  --pack NAME        Additional pack (repeatable)
+  --isolated         Run the raider in its own lib
+EOF
+  exit 0;
+}
+
 sub print_init_help {
   print <<"EOF";
 raider hall init [--name NAME] [--engine ENGINE] [--persona PERSONA]
@@ -123,11 +181,17 @@ sub run_start {
   my @args = @_;
   my %opt;
   local @ARGV = @args;
-  Getopt::Long::GetOptions(\%opt, 'daemon', 'help');
+  Getopt::Long::GetOptions(\%opt, 'daemon', 'acp-port=i', 'acp-host=s', 'help');
   return print_start_help() if $opt{help};
 
   my $dir = hall_dir(@args);
   $dir = path($dir);
+
+  # --acp-port wins over yml; persist nothing, pass through env.
+  if (defined $opt{'acp-port'}) {
+    $ENV{RAIDER_HALL_ACP_PORT} = $opt{'acp-port'};
+    $ENV{RAIDER_HALL_ACP_HOST} = $opt{'acp-host'} if defined $opt{'acp-host'};
+  }
 
   my $pidfile = $dir->child('.raider-hall.pid');
   if (-f $pidfile) {
@@ -165,10 +229,12 @@ sub run_start {
 
 sub print_start_help {
   print <<"EOF";
-raider hall start [DIR] [--daemon]
+raider hall start [DIR] [--daemon] [--acp-port N] [--acp-host H]
 
 Start the hall daemon in DIR (default: cwd).
---daemon   Fork to background
+  --daemon          Fork to background
+  --acp-port N      Enable ACP adapter on TCP port N (127.0.0.1)
+  --acp-host H      Bind ACP to H (default: 127.0.0.1; use 0.0.0.0 for all)
 EOF
   exit 0;
 }
@@ -224,41 +290,37 @@ sub run_ps {
 sub _send_command {
   my ($socket_path, $msg) = @_;
 
-  my $loop = IO::Async::Loop->new;
+  require IO::Socket::UNIX;
+  require IO::Async::Stream;
+
+  my $sock = IO::Socket::UNIX->new(
+    Type => SOCK_STREAM,
+    Peer => $socket_path,
+  ) or die "Cannot connect to $socket_path: $!\n";
 
   my $result;
-  my $connected;
-  my $done;
-
-  my $connector = $loop->connect(
-    path => "$socket_path",
-    on_connected => sub {
-      my ($sock) = @_;
-      $connected = 1;
-      my $json = JSON::MaybeXS->new->encode($msg);
-      $sock->write("$json\n");
-    },
+  my $stream = IO::Async::Stream->new(
+    handle => $sock,
     on_read => sub {
-      my ($sock, $bufref) = @_;
+      my ($stream, $bufref, $eof) = @_;
       if ($$bufref =~ s/^(.*?)\n//) {
         $result = JSON::MaybeXS->new->decode($1);
-        $done = 1;
-        $loop->stop;
+        $stream->loop->stop;
+        return length($1);
       }
-    },
-    on_close => sub {
-      $loop->stop if $connected && !$done;
-    },
-    on_error => sub {
-      my ($err) = @_;
-      die "Connection error: $err\n";
+      return 0;
     },
   );
 
-  $loop->add($connector);
+  my $loop = IO::Async::Loop->new;
+  $loop->add($stream);
+
+  my $json = JSON::MaybeXS->new->encode($msg);
+  $stream->write("$json\n");
+
   $loop->run;
 
-  die "No response from hall\n" unless $result;
+  die "No response from hall\n" unless defined $result;
   return $result;
 }
 

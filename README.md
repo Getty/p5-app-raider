@@ -106,6 +106,10 @@ the engine, and a cheap model is used by default.
 
 Override with `-e <engine>`, `-m <model>`, or `-k <key>`.
 
+Raider currently uses provider APIs. Claude Code subscription/OAuth
+credentials from `~/.claude` are not read or reused as Anthropic API
+credentials.
+
 ## Tools the agent has
 
 | Tool                                            | Notes                                       |
@@ -233,6 +237,11 @@ Values are auto-coerced: `0.2` → Float, `4096` → Int, `true`/`false` → 1/0
 | `/prompt`            | Launch the prompt-builder (edits `.raider.md`)      |
 | `/skill [PATH]`      | Export plain markdown how-to-use-raider doc         |
 | `/skill-claude [PATH]` | Export Claude Code SKILL.md with YAML frontmatter |
+| `/model [NAME]`      | Show or save the model for the next run             |
+| `/model list [FILTER]` | List models reported by the active engine         |
+| `/packs`             | List available packs and whether they are active    |
+| `/pack on/off NAME`  | Enable or disable a pack                            |
+| `/pack NAME`         | Toggle a pack                                       |
 | `/quit` `/exit` `:q` | Leave                                               |
 
 ## Packs — persona and power bundles
@@ -544,6 +553,8 @@ raider [options] [prompt...]
       --max-iterations N   Hard safety cap on tool rounds per raid
       --no-color           Disable ANSI colors
       --no-trace           Hide live tool-call progress output
+      --perl               Enable perl_eval / perl_check / perl_cpanm tools
+      --pack NAME          Enable a bundled pack (repeatable)
       --customize-prompt   Launch the prompt-builder at startup
       --claude             Load CLAUDE.md + .claude/skills/*/SKILL.md
       --openai / --codex   Load AGENTS.md
@@ -587,7 +598,9 @@ Build system: [Dist::Zilla](https://metacpan.org/dist/Dist-Zilla) with
 `[@Author::GETTY]`.
 
 A checked-in `cpanfile.snapshot` pins the exact dependency versions that
-last produced a known-good build. To install against it use
+last produced a known-good build. Docker uses that snapshot through
+[`cpm`](https://metacpan.org/dist/App-cpm) with the MetaCPAN resolver.
+For local non-Docker installs you can still use
 [Carton](https://metacpan.org/dist/Carton):
 
 ```bash
@@ -650,21 +663,32 @@ sessions via the mounted `.raider_history` file.
 
 ### Build locally
 
+The Dockerfile installs from the Dist::Zilla-built distribution directory,
+not from a tarball in the build context. Build the dist directory first and
+use that as the Docker context:
+
+```bash
+dzil build
+VERSION=$(perl -Ilib -MApp::Raider -E 'say $App::Raider::VERSION')
+```
+
 Build the user-target image with your current uid/gid so files written by
 raider keep your ownership:
 
 ```bash
 docker build \
+  --build-arg RAIDER_VERSION=$VERSION \
   --target runtime-user \
   --build-arg RAIDER_UID=$(id -u) \
   --build-arg RAIDER_GID=$(id -g) \
-  -t raider:local .
+  -t raider:local App-Raider-$VERSION
 ```
 
 For a local root image:
 
 ```bash
-docker build --target runtime-root -t raider:local-root .
+docker build --build-arg RAIDER_VERSION=$VERSION \
+  --target runtime-root -t raider:local-root App-Raider-$VERSION
 ```
 
 ### Publishing the Docker Hub image (maintainer)
@@ -674,7 +698,8 @@ Automated — `dist.ini` declares `run_after_release` hooks that, after
 
 1. Create (or update) the matching GitHub release and attach the
    `App-Raider-%v.tar.gz` as an asset.
-2. `docker build` the `runtime-root` target tagged
+2. `docker build` the Dist::Zilla build directory with the `runtime-root`
+   target tagged
    `raudssus/raider:%v` and `raudssus/raider:latest`.
 3. `docker push` both tags.
 
@@ -695,12 +720,13 @@ Manual fallback (if the hooks are skipped — e.g. `dzil release --no-release` i
 obviously not a thing, but for rebuilding an old release):
 
 ```bash
-VERSION=0.002   # must be an already-released CPAN version
-cpanm --look App::Raider@$VERSION   # drops you in a build dir with the tarball
-# or: wget the tarball from MetaCPAN, place it next to the Dockerfile
-docker build --target runtime-root \
+VERSION=0.004
+dzil build
+docker build \
   --build-arg RAIDER_VERSION=$VERSION \
-  -t raudssus/raider:$VERSION -t raudssus/raider:latest .
+  --target runtime-root \
+  -t raudssus/raider:$VERSION -t raudssus/raider:latest \
+  App-Raider-$VERSION
 docker push raudssus/raider:$VERSION raudssus/raider:latest
 ```
 

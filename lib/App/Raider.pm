@@ -51,6 +51,10 @@ working coding/system agent:
 =item * Web search + fetch via L<Net::Async::WebSearch> and
 L<Net::Async::HTTP> (L<App::Raider::WebTools>).
 
+=item * Optional Perl-native tools via L<App::Raider::PerlTools>.
+
+=item * Persona and power packs via L<App::Raider::Packs>.
+
 =item * Per-engine cheap-model defaults and automatic engine selection from
 the first C<*_API_KEY> env var found.
 
@@ -262,8 +266,8 @@ EOM
 =attr root
 
 Working directory for tool operations. Defaults to the current process cwd.
-File tools are chrooted to this directory; bash commands inherit it as their
-default working directory.
+File tools are confined to this directory, including realpath checks for
+symlink escapes; bash commands inherit it as their default working directory.
 
 =cut
 
@@ -344,12 +348,11 @@ has preferred_lib_target => (
   predicate => 'has_preferred_lib_target',
 );
 
-=attr packs
+=attr pack_names
 
-L<App::Raider::Packs::Collection> of the installed packs. Defaults
-come from the bundled C<share/packs/> plus C<$RAIDER_PACK_DIRS>; the
-C<packs:> key in F<.raider.yml> (C<[caveman, git-guru]>) enables the
-listed ones exclusively.
+Optional list of pack names supplied by the CLI, usually from repeatable
+C<--pack NAME>. When present, these override the C<packs:> list in
+F<.raider.yml>.
 
 =cut
 
@@ -358,6 +361,15 @@ has pack_names => (
   isa       => 'ArrayRef[Str]',
   predicate => 'has_pack_names',
 );
+
+=attr packs
+
+L<App::Raider::Packs::Collection> of the installed packs. Defaults
+come from the bundled C<share/packs/> plus C<$RAIDER_PACK_DIRS>; the
+C<packs:> key in F<.raider.yml> (C<[caveman, git-guru]>) enables the
+listed ones exclusively.
+
+=cut
 
 has packs => (
   is      => 'ro',

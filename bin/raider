@@ -815,20 +815,30 @@ else {
     raider "Find all TODO comments in lib/ and summarize them"
     raider -e openai -m gpt-4o "Run the test suite and fix any trivial failures"
     raider -i -r ~/dev/myproject
+    raider --perl --pack testing-fu "Run prove -l t and explain failures"
     raider --json "Summarize README.md" > result.json
+    raider hall start --acp-port 38421
+    raider acp prompt 127.0.0.1:38421 --raider bjorn "Summarize status"
 
 =head1 DESCRIPTION
 
 F<raider> is the CLI front-end for L<App::Raider>. It wires an LLM engine
 (via L<Langertha>) to a filesystem tool server and L<MCP::Run::Bash>,
 then runs the L<Langertha::Raider> multi-turn agent loop on your prompt.
+Optional profile, pack, and Perl-native tool flags let the same CLI load
+project agent instructions, persona/power bundles, and C<perl_eval> /
+C<perl_check> / C<perl_cpanm> tools.
 
 Interactive mode (C<-i>) opens a REPL with conversation history retained
 across turns. With L<Term::ReadLine::Gnu> installed, line editing and
 persistent input history (F<~/.raider_history>) are enabled automatically —
 including across Ctrl-C interrupts. Slash commands available in the REPL:
 C</help>, C</clear>, C</metrics>, C</stats>, C</reload>, C</prompt>,
-C</skill>, C</skill-claude>, C</model>, C</quit>.
+C</skill>, C</skill-claude>, C</model>, C</packs>, C</pack>, C</quit>.
+
+Subcommands are dispatched before normal raider startup: C<raider hall ...>
+manages a Raider Hall daemon, and C<raider acp ...> runs the bundled ACP
+client.
 
 With C<--json>, F<raider> emits a single JSON object
 (C<{response, metrics, elapsed}>) instead of the human-oriented output, which
@@ -836,6 +846,8 @@ is useful for scripting.
 
 API keys come from standard environment variables
 (C<ANTHROPIC_API_KEY>, C<OPENAI_API_KEY>, etc.).
+Claude Code subscription/OAuth credentials are not consumed by this CLI;
+Anthropic usage goes through the API key path.
 
 =seealso
 

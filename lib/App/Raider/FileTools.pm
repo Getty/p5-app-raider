@@ -14,12 +14,14 @@ our @EXPORT_OK = qw( build_file_tools_server );
 =func build_file_tools_server
 
     my $server = App::Raider::FileTools::build_file_tools_server(
-        root => '/some/dir',  # optional chroot
+        root => '/some/dir',  # optional confinement root
     );
 
 Returns an L<MCP::Server> instance with the tools C<list_files>, C<read_file>,
 C<write_file>, and C<edit_file> registered. When C<root> is set, all path
-arguments are confined to that directory.
+arguments are confined to that directory. Existing paths and nearest existing
+parents are resolved with C<realpath>, so symlinks cannot be used to escape the
+root.
 
 =cut
 

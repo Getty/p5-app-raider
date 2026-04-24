@@ -2,6 +2,29 @@ Revision history for App-Raider
 
 {{$NEXT}}
 
+    - Fix filesystem confinement to reject symlink escapes for read and
+      write operations, with regression tests.
+    - Fix WebTools sync wrappers to await IO::Async futures through the
+      loop, with injectable HTTP/search test doubles.
+    - Fix Hall singleton queue replay, --pack propagation, Telegram
+      future retention, and MCP tool result handling.
+    - Add `--pack NAME` CLI parsing for one-shot pack activation.
+    - Filter Raider-only .raider.yml keys before constructing Langertha
+      engines.
+    - Fix PerlTools local::lib cpanm invocation and record only
+      successful installs.
+    - Update Langertha dependency pin to the latest released CPAN
+      version.
+    - Add .codex to .gitignore and .dockerignore as a Codex runtime
+      mount marker.
+    - Rework Docker builds to install from the Dist::Zilla build
+      directory via cpm, cpanfile.snapshot, and the MetaCPAN resolver.
+    - Move GitHub/Docker release publishing into maint/release-after.pl
+      so run_after_release does not depend on shell redirection or
+      conditionals.
+    - Update README and POD for pack, PerlTools, Docker dist-dir build,
+      Hall/ACP subcommands, and API-key-only Anthropic authentication.
+
     - Slice 1 — Perl-native tools: --perl unlocks perl_eval /
       perl_check / perl_cpanm, a private local::lib per raider, and
       auto-recovery on missing modules.

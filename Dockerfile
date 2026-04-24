@@ -1,27 +1,39 @@
 # ------------------------------------------------------------------ builder
 FROM perl:5.40-slim AS builder
 
+ARG RAIDER_VERSION=dev
+ARG RAIDER_SRC=/usr/local/src/App-Raider-${RAIDER_VERSION}
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential libssl-dev libreadline-dev git ca-certificates \
+        build-essential libssl-dev libreadline-dev libxml2-dev \
+        zlib1g-dev git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Dist::Zilla source trees have no Makefile.PL — build a tarball locally
-# with `dzil build` and pass the version as a build arg.
-ARG RAIDER_VERSION=0.002
-COPY App-Raider-${RAIDER_VERSION}.tar.gz /tmp/
+RUN curl -fsSL https://raw.githubusercontent.com/skaji/cpm/main/cpm \
+        -o /usr/local/bin/cpm \
+    && chmod +x /usr/local/bin/cpm
 
-# REPL quality-of-life: Term::ReadLine::Gnu gives real line editing
-# (without it the stub backend breaks Backspace / history / cursor keys);
-# Term::Choose + Term::Table power /model list and similar pickers.
-RUN cpanm --notest Term::ReadLine::Gnu Term::Choose Term::Table \
-    && cpanm --notest /tmp/App-Raider-${RAIDER_VERSION}.tar.gz \
-    && rm -rf /tmp/App-Raider-*.tar.gz ~/.cpanm
+WORKDIR ${RAIDER_SRC}
+COPY . .
+
+# The Docker context is the Dist::Zilla-built distribution directory. Install
+# prerequisites from the checked-in snapshot through cpm, then install the dist.
+RUN cpm install -g Carton::Snapshot --resolver metacpan --without-test \
+    && cpm install -g \
+        --cpanfile cpanfile \
+        --snapshot cpanfile.snapshot \
+        --resolver metacpan \
+        --with-recommends \
+        --without-test \
+    && perl Makefile.PL \
+    && make install \
+    && rm -rf ~/.perl-cpm ~/.cpanm
 
 # ------------------------------------------------------------------ runtime-base
 FROM perl:5.40-slim AS runtime-base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libreadline8 libssl3 git ca-certificates gosu passwd \
+        libreadline8 libssl3 libxml2 zlib1g git ca-certificates gosu passwd \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/lib/perl5/site_perl/ /usr/local/lib/perl5/site_perl/
@@ -33,14 +45,14 @@ ENV HOME=/home/raider \
 WORKDIR /work
 
 # ------------------------------------------------------------------ runtime-root
-# Runs as root. Use for interactive sessions where you want to attach to a
-# host project tree and match its ownership via a thin entrypoint.
+# Runs as root. This is the Docker Hub default and works well for one-off
+# sessions against a bind-mounted project tree.
 FROM runtime-base AS runtime-root
 ENTRYPOINT ["raider"]
 
 # ------------------------------------------------------------------ runtime-user
-# Runs as a non-root user. Build with --build-arg RAIDER_UID=$(id -u) to match
-# host uid so files written under /work keep your ownership.
+# Runs as a non-root user. Build with --build-arg RAIDER_UID=$(id -u) and
+# --build-arg RAIDER_GID=$(id -g) to match host ownership under /work.
 FROM runtime-base AS runtime-user
 ARG RAIDER_UID=1000
 ARG RAIDER_GID=1000

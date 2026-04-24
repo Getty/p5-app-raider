@@ -1,6 +1,7 @@
 
 requires 'Moose';
 requires 'MooseX::NonMoose';
+requires 'namespace::autoclean', '0.31';
 requires 'Future::AsyncAwait', '>= 0.66';
 requires 'IO::Async';
 requires 'Path::Tiny';
